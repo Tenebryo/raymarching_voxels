@@ -108,13 +108,15 @@ fn main() {
                 ty: "compute",
                 src: "
                     #version 450
-                    layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
-                    layout(set = 0, binding = 0) buffer Data {
-                        uint data[];
-                    } data;
+                    layout(local_size_x = 12, local_size_y = 12, local_size_z = 1) in;
+                    layout(rgba32f, binding = 0) uniform image2D image;
                     void main() {
-                        uint idx = gl_GlobalInvocationID.x;
-                        data.data[idx] *= 12;
+                        uint idxX = gl_GlobalInvocationID.x;
+                        uint idxY = gl_GlobalInvocationID.y;
+
+                        ivec2 size = imageSize(image);
+
+                        imageStore(image, ivec2(idxX,idxY), vec4(idxX / float(size.x), idxY / float(size.y), 0.0, 1.0));
                     }
                 "
             }
@@ -123,78 +125,10 @@ fn main() {
         ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
     });
 
-    // We start by creating the buffer that will store the data.
-    let data_buffer = {
-        // Iterator that produces the data.
-        let data_iter = (0 .. 65536u32).map(|n| n);
-        // Builds the buffer and fills it with this iterator.
-        CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, data_iter).unwrap()
-    };
-
-    // In order to let the shader access the buffer, we need to build a *descriptor set* that
-    // contains the buffer.
-    //
-    // The resources that we bind to the descriptor set must match the resources expected by the
-    // pipeline which we pass as the first parameter.
-    //
-    // If you want to run the pipeline on multiple different buffers, you need to create multiple
-    // descriptor sets that each contain the buffer you want to run the shader on.
-    let layout = compute_pipeline.layout().descriptor_set_layout(0).unwrap();
-    let set = Arc::new(PersistentDescriptorSet::start(layout.clone())
-        .add_buffer(data_buffer.clone()).unwrap()
-        .build().unwrap()
-    );
-
-    // In order to execute our operation, we have to build a command buffer.
-    let command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap()
-        // The command buffer only does one thing: execute the compute pipeline.
-        // This is called a *dispatch* operation.
-        //
-        // Note that we clone the pipeline and the set. Since they are both wrapped around an
-        // `Arc`, this only clones the `Arc` and not the whole pipeline or set (which aren't
-        // cloneable anyway). In this example we would avoid cloning them since this is the last
-        // time we use them, but in a real code you would probably need to clone them.
-        .dispatch([1024, 1, 1], compute_pipeline.clone(), set.clone(), ()).unwrap()
-        // Finish building the command buffer by calling `build`.
-        .build().unwrap();
-
-    // Let's execute this command buffer now.
-    // To do so, we TODO: this is a bit clumsy, probably needs a shortcut
-    let future = sync::now(device.clone())
-        .then_execute(compute_queue.clone(), command_buffer).unwrap()
-
-        // This line instructs the GPU to signal a *fence* once the command buffer has finished
-        // execution. A fence is a Vulkan object that allows the CPU to know when the GPU has
-        // reached a certain point.
-        // We need to signal a fence here because below we want to block the CPU until the GPU has
-        // reached that point in the execution.
-        .then_signal_fence_and_flush().unwrap();
-
-    // Blocks execution until the GPU has finished the operation. This method only exists on the
-    // future that corresponds to a signalled fence. In other words, this method wouldn't be
-    // available if we didn't call `.then_signal_fence_and_flush()` earlier.
-    // The `None` parameter is an optional timeout.
-    //
-    // Note however that dropping the `future` variable (with `drop(future)` for example) would
-    // block execution as well, and this would be the case even if we didn't call
-    // `.then_signal_fence_and_flush()`.
-    // Therefore the actual point of calling `.then_signal_fence_and_flush()` and `.wait()` is to
-    // make things more explicit. In the future, if the Rust language gets linear types vulkano may
-    // get modified so that only fence-signalled futures can get destroyed like this.
-    future.wait(None).unwrap();
-
-    // Now that the GPU is done, the content of the buffer should have been modified. Let's
-    // check it out.
-    // The call to `read()` would return an error if the buffer was still in use by the GPU.
-    let data_buffer_content = data_buffer.read().unwrap();
-    for n in 0 .. 65536u32 {
-        assert_eq!(data_buffer_content[n as usize], n * 12);
-    }
-
     // Before we can draw on the surface, we have to create what is called a swapchain. Creating
     // a swapchain allocates the color buffers that will contain the image that will ultimately
     // be visible on the screen. These images are returned alongside with the swapchain.
-    let (mut swapchain, images) = {
+    let (mut swapchain, mut images) = {
         // Querying the capabilities of the surface. When we create the swapchain we can only
         // pass values that are allowed by the capabilities.
         let caps = surface.capabilities(physical).unwrap();
@@ -240,49 +174,6 @@ fn main() {
         ].iter().cloned()).unwrap()
     };
 
-    // The next step is to create the shaders.
-    //
-    // The raw shader creation API provided by the vulkano library is unsafe, for various reasons.
-    //
-    // An overview of what the `vulkano_shaders::shader!` macro generates can be found in the
-    // `vulkano-shaders` crate docs. You can view them at https://docs.rs/vulkano-shaders/
-    //
-    // TODO: explain this in details
-    mod vs {
-        vulkano_shaders::shader!{
-            ty: "vertex",
-            src: "
-				#version 450
-				layout(location = 0) in vec2 position;
-                layout(location = 0) out vec2 tex_coords;
-				void main() {
-                    gl_Position = vec4(position, 0.0, 1.0);
-                    tex_coords = (position + vec2(1.0)) / 2.0;
-				}
-			"
-        }
-    }
-
-    mod fs {
-        vulkano_shaders::shader!{
-            ty: "fragment",
-            src: "
-				#version 450
-                layout(location = 0) in vec2 tex_coords;
-                layout(location = 0) out vec4 f_color;
-                
-                layout(set = 0, binding = 0) uniform sampler2D tex;
-
-				void main() {
-					f_color = texture(tex, tex_coords);
-				}
-			"
-        }
-    }
-
-    let vs = vs::Shader::load(device.clone()).unwrap();
-    let fs = fs::Shader::load(device.clone()).unwrap();
-
     // At this point, OpenGL initialization would be finished. However in Vulkan it is not. OpenGL
     // implicitly does a lot of computation whenever you draw. In Vulkan, you have to do all this
     // manually.
@@ -317,30 +208,6 @@ fn main() {
             depth_stencil: {}
         }
     ).unwrap());
-
-    // Before we draw we have to create what is called a pipeline. This is similar to an OpenGL
-    // program, but much more specific.
-    let graphics_pipeline = Arc::new(GraphicsPipeline::start()
-        // We need to indicate the layout of the vertices.
-        // The type `SingleBufferDefinition` actually contains a template parameter corresponding
-        // to the type of each vertex. But in this code it is automatically inferred.
-        .vertex_input_single_buffer()
-        // A Vulkan shader can in theory contain multiple entry points, so we have to specify
-        // which one. The `main` word of `main_entry_point` actually corresponds to the name of
-        // the entry point.
-        .vertex_shader(vs.main_entry_point(), ())
-        // The content of the vertex buffer describes a list of triangles.
-        .triangle_strip()
-        // Use a resizable viewport set to draw over the entire window
-        .viewports_dynamic_scissors_irrelevant(1)
-        // See `vertex_shader`.
-        .fragment_shader(fs.main_entry_point(), ())
-        // We have to indicate which subpass of which render pass this pipeline is going to be used
-        // in. The pipeline will only be usable from this particular subpass.
-        .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
-        // Now that our builder is filled, we call `build()` to obtain an actual pipeline.
-        .build(device.clone())
-        .unwrap());
 
     // Dynamic viewports allow us to recreate just the viewport when the window is resized
     // Otherwise we would have to recreate the whole pipeline.
@@ -403,9 +270,10 @@ fn main() {
                     };
 
                     swapchain = new_swapchain;
+                    images = new_images;
                     // Because framebuffers contains an Arc on the old swapchain, we need to
                     // recreate framebuffers as well.
-                    framebuffers = window_size_dependent_setup(&new_images, render_pass.clone(), &mut dynamic_state);
+                    framebuffers = window_size_dependent_setup(&images, render_pass.clone(), &mut dynamic_state);
                     recreate_swapchain = false;
                 }
 
@@ -432,45 +300,20 @@ fn main() {
                     recreate_swapchain = true;
                 }
 
-                // Specify the color to clear the framebuffer with i.e. blue
-                let clear_values = vec!([0.0, 0.0, 1.0, 1.0].into());
+                let layout = compute_pipeline.layout().descriptor_set_layout(0).unwrap();
+                let swapchain_image_set = Arc::new(PersistentDescriptorSet::start(layout.clone())
+                    .add_image(images[image_num].clone()).unwrap()
+                    .build().unwrap()
+                );
 
-                // In order to draw, we have to build a *command buffer*. The command buffer object holds
-                // the list of commands that are going to be executed.
-                //
-                // Building a command buffer is an expensive operation (usually a few hundred
-                // microseconds), but it is known to be a hot path in the driver and is expected to be
-                // optimized.
-                //
-                // Note that we have to pass a queue family when we create the command buffer. The command
-                // buffer will only be executable on that given queue family.
-                let command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), graphics_queue.family()).unwrap()
-                    // Before we can draw, we have to *enter a render pass*. There are two methods to do
-                    // this: `draw_inline` and `draw_secondary`. The latter is a bit more advanced and is
-                    // not covered here.
-                    //
-                    // The third parameter builds the list of values to clear the attachments with. The API
-                    // is similar to the list of attachments when building the framebuffers, except that
-                    // only the attachments that use `load: Clear` appear in the list.
-                    .begin_render_pass(framebuffers[image_num].clone(), false, clear_values).unwrap()
-
-                    // We are now inside the first subpass of the render pass. We add a draw command.
-                    //
-                    // The last two parameters contain the list of resources to pass to the shaders.
-                    // Since we used an `EmptyPipeline` object, the objects have to be `()`.
-                    .draw(graphics_pipeline.clone(), &dynamic_state, vertex_buffer.clone(), (), ()).unwrap()
-
-                    // We leave the render pass by calling `draw_end`. Note that if we had multiple
-                    // subpasses we could have called `next_inline` (or `next_secondary`) to jump to the
-                    // next subpass.
-                    .end_render_pass().unwrap()
-
-                    // Finish building the command buffer by calling `build`.
+                let raymarch_command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap()
+                    .dispatch([32,32,1], compute_pipeline.clone(), swapchain_image_set.clone(), ()).unwrap()
                     .build().unwrap();
 
                 let future = previous_frame_end.take().unwrap()
                     .join(acquire_future)
-                    .then_execute(graphics_queue.clone(), command_buffer).unwrap()
+                    // rendering is actually done on a compute queue
+                    .then_execute(compute_queue.clone(), raymarch_command_buffer).unwrap()
 
                     // The color output is now expected to contain our triangle. But in order to show it on
                     // the screen, we have to *present* the image by calling `present`.
@@ -478,7 +321,7 @@ fn main() {
                     // This function does not actually present the image immediately. Instead it submits a
                     // present command at the end of the queue. This means that it will only be presented once
                     // the GPU has finished executing the command buffer that draws the triangle.
-                    .then_swapchain_present(graphics_queue.clone(), swapchain.clone(), image_num)
+                    .then_swapchain_present(compute_queue.clone(), swapchain.clone(), image_num)
                     .then_signal_fence_and_flush();
 
                 match future {
