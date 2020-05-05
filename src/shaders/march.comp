@@ -1,0 +1,122 @@
+#version 450
+layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
+layout(rgba32f, binding = 0) uniform image2D image;
+
+const uint CHUNK_DIM = 64;
+const uint LOG2_CHUNK_DIM = 6;
+const uint CHUNK_DIM_MASK = 0x3f;
+
+struct VoxelChunk {
+    uint occ[8192];
+};
+
+layout(binding = 1) buffer VoxelOcc {
+    VoxelChunk chunks[];
+} vox;
+
+layout(push_constant) uniform PushConstantData {
+    vec3 cam_o;
+    vec3 cam_f;
+    vec3 cam_u;
+    ivec3 vox_chunk_dim;
+} pc;
+
+bool check_voxel(int x, int y, int z) {
+    
+    int cx = x >> LOG2_CHUNK_DIM;
+    int cy = y >> LOG2_CHUNK_DIM;
+    int cz = z >> LOG2_CHUNK_DIM;
+
+    uint vx = (x >> 5) & CHUNK_DIM_MASK;
+    uint vy = y & CHUNK_DIM_MASK;
+    uint vz = z & CHUNK_DIM_MASK;
+
+    uint chunk_idx = cx + pc.vox_chunk_dim.x * (cy + pc.vox_chunk_dim.y * cz);
+    uint vox_idx = vx + CHUNK_DIM * (vy + CHUNK_DIM * vz);
+    uint bit_idx = x & 0x1f;
+
+    return (vox.chunks[chunk_idx].occ[vox_idx] & (1 << bit_idx)) != 0;
+}
+
+vec3 raymarch(vec3 o, vec3 d) {
+    float mx, my, mz, dx, dy, dz, t, dsx, dsy, dsz, ox, oy, oz;
+    int sx, sy, sz, hsx, hsy, hsz, x, y, z;
+    t = 0;
+    
+    sx = int(sign(d.x));
+    sy = int(sign(d.y));
+    sz = int(sign(d.z));
+    
+    x = int(floor(o.x));
+    y = int(floor(o.y));
+    z = int(floor(o.z));
+    
+    dx = 1.0 / abs(d.x);
+    dy = 1.0 / abs(d.y);
+    dz = 1.0 / abs(d.z);
+    
+    hsx = (1 + sx) / 2;
+    hsy = (1 + sy) / 2;
+    hsz = (1 + sz) / 2;
+    
+    mx = abs(x + hsx - o.x) * dx;
+    my = abs(y + hsy - o.y) * dy;
+    mz = abs(z + hsz - o.z) * dz;
+    
+    uint n = 1024;
+
+    vec3 color = vec3(0.0);
+    
+    while (n != 0) {
+        
+        if (mx < my) {
+        if (mx < mz) {
+            x += sx;
+            mx += dx;
+        } else {
+            z += sz;
+            mz += dz;
+        }
+        } else {
+        if (my < mz) {
+            y += sy;
+            my += dy;
+        } else {
+            z += sz;
+            mz += dz;
+        }
+        }
+
+        if (check_voxel(x,y,z)) {
+            color = vec3(1.0);
+            break;
+        }
+
+        n -= 1;
+    }
+
+    return color;
+}
+
+void main() {
+    uint idxX = gl_GlobalInvocationID.x;
+    uint idxY = gl_GlobalInvocationID.y;
+
+    ivec2 size = imageSize(image);
+
+    if (idxX < size.x && idxY < size.y) {
+        // calculate ray for this pixel by constructing a virtual screen
+        vec3 vx = normalize(cross(pc.cam_f, pc.cam_u));
+        vec3 vy = normalize(cross(pc.cam_f, vx));
+
+        float cx = idxX / float(size.x) - 0.5;
+        float cy = idxY / float(size.y) - 0.5;
+
+        vec3 d = pc.cam_f + cx * vx + cy * vy;
+
+        vec3 color = raymarch(pc.cam_o, d);
+
+        imageStore(image, ivec2(idxX,idxY), vec4(color, 1.0));
+        // imageStore(image, ivec2(idxX,idxY), vec4(idxX / float(size.x), idxY / float(size.y), 0.0, 1.0));
+    }
+}

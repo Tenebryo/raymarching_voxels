@@ -224,10 +224,10 @@ fn main() {
     let mut surface_height = dimensions[1];
 
     let mut pc = shaders::PushConstantData {
-        cam_o : [0.0; 3],
-        cam_f : [0.0; 3],
-        cam_u : [0.0; 3],
-        vox_dim : [0; 3],
+        cam_o : [0.0, 0.0, 0.0],
+        cam_f : [0.0, 0.0, 0.0],
+        cam_u : [0.0, 1.0, 0.0],
+        vox_chunk_dim : [4, 4, 4],
 
         // dummy variables for alignment
         _dummy0 : [0;4],
