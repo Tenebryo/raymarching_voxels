@@ -14,6 +14,8 @@
 // GPU", or *GPGPU*. This is what this example demonstrates.
 
 mod timing;
+mod shaders;
+
 use timing::Timing;
 
 use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer};
@@ -106,91 +108,8 @@ fn main() {
     // pipelines are much simpler to create.
     let compute_pipeline = Arc::new({
         // raytracing shader
-        mod cs {
-            vulkano_shaders::shader!{
-                ty: "compute",
-                src: "
-                    #version 450
-                    layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
-                    layout(rgba32f, binding = 0) uniform image2D image;
-                    layout(binding = 1) buffer VoxelOcc {
-                        uint data[];
-                    } occ;
+        use shaders::cs;
 
-                    bool visit(int x, int y, int z) {
-                        return false;
-                    }
-
-                    void raymarch(vec3 o, vec3 d) {
-                        float mx, my, mz, dx, dy, dz, t, dsx, dsy, dsz, ox, oy, oz;
-                        int sx, sy, sz, hsx, hsy, hsz, x, y, z;
-                        t = 0;
-                        
-                        sx = int(sign(d.x));
-                        sy = int(sign(d.y));
-                        sz = int(sign(d.z));
-                        
-                        x = int(floor(o.x));
-                        y = int(floor(o.y));
-                        z = int(floor(o.z));
-                        
-                        dx = 1.0 / abs(d.x);
-                        dy = 1.0 / abs(d.y);
-                        dz = 1.0 / abs(d.z);
-                        
-                        hsx = (1 + sx) / 2;
-                        hsy = (1 + sy) / 2;
-                        hsz = (1 + sz) / 2;
-                        
-                        mx = abs(x + hsx - o.x) * dx;
-                        my = abs(y + hsy - o.y) * dy;
-                        mz = abs(z + hsz - o.z) * dz;
-                        
-                        
-                        int mask = 3;
-                        
-                        int n = 128;
-                        int l = 0;
-                        float s = 1.0;
-                        int scale = 1;
-                        
-                        while (n >= 0) {
-                          
-                          if (mx < my) {
-                            if (mx < mz) {
-                              x += sx;
-                              mx += dx;
-                            } else {
-                              z += sz;
-                              mz += dz;
-                            }
-                          } else {
-                            if (my < mz) {
-                              y += sy;
-                              my += dy;
-                            } else {
-                              z += sz;
-                              mz += dz;
-                            }
-                          }
-
-                          visit(x,y,z);
-                        }
-                    }
-
-                    void main() {
-                        uint idxX = gl_GlobalInvocationID.x;
-                        uint idxY    = gl_GlobalInvocationID.y;
-
-                        ivec2 size = imageSize(image);
-
-                        if (idxX < size.x && idxY < size.y) {
-                            imageStore(image, ivec2(idxX,idxY), vec4(idxX / float(size.x), idxY / float(size.y), 0.0, 1.0));
-                        }
-                    }
-                "
-            }
-        }
         let shader = cs::Shader::load(device.clone()).unwrap();
         ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
     });
@@ -304,6 +223,27 @@ fn main() {
     let mut surface_width = dimensions[0];
     let mut surface_height = dimensions[1];
 
+    let mut pc = shaders::PushConstantData {
+        cam_o : [0.0; 3],
+        cam_f : [0.0; 3],
+        cam_u : [0.0; 3],
+        vox_dim : [0; 3],
+
+        // dummy variables for alignment
+        _dummy0 : [0;4],
+        _dummy1 : [0;4],
+        _dummy2 : [0;4],
+    };
+
+
+    let data_buffer = {
+        // Iterator that produces the data.
+        let data_iter = (0 .. (4 * 4 * 4)).map(|_| shaders::VoxelChunk{ occ : [0; 8192] });
+        // Builds the buffer and fills it with this iterator.
+        CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, data_iter).unwrap()
+    };
+
+
     event_loop.run(move |event, _, control_flow| {
         match event {
             Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
@@ -370,13 +310,12 @@ fn main() {
                 let layout = compute_pipeline.layout().descriptor_set_layout(0).unwrap();
                 let swapchain_image_set = Arc::new(PersistentDescriptorSet::start(layout.clone())
                     .add_image(images[image_num].clone()).unwrap()
+                    .add_buffer(data_buffer.clone()).unwrap()
                     .build().unwrap()
                 );
 
                 let raymarch_command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap()
-                    // .dispatch([32,32,1], compute_pipeline.clone(), swapchain_image_set.clone(), ()).unwrap()
-                    // .dispatch([surface_width,surface_height,1], compute_pipeline.clone(), swapchain_image_set.clone(), ()).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], compute_pipeline.clone(), swapchain_image_set.clone(), ()).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], compute_pipeline.clone(), swapchain_image_set.clone(), pc).unwrap()
                     .build().unwrap();
 
                 let future = previous_frame_end.take().unwrap()
