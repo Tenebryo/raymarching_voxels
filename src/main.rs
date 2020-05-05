@@ -13,6 +13,9 @@
 // been more or more used for general-purpose operations as well. This is called "General-Purpose
 // GPU", or *GPGPU*. This is what this example demonstrates.
 
+mod timing;
+use timing::Timing;
+
 use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer};
 use vulkano::command_buffer::{AutoCommandBufferBuilder, DynamicState};
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
@@ -108,15 +111,82 @@ fn main() {
                 ty: "compute",
                 src: "
                     #version 450
-                    layout(local_size_x = 12, local_size_y = 12, local_size_z = 1) in;
+                    layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
                     layout(rgba32f, binding = 0) uniform image2D image;
+                    layout(binding = 1) buffer VoxelOcc {
+                        uint data[];
+                    } occ;
+
+                    bool visit(int x, int y, int z) {
+                        return false;
+                    }
+
+                    void raymarch(vec3 o, vec3 d) {
+                        float mx, my, mz, dx, dy, dz, t, dsx, dsy, dsz, ox, oy, oz;
+                        int sx, sy, sz, hsx, hsy, hsz, x, y, z;
+                        t = 0;
+                        
+                        sx = int(sign(d.x));
+                        sy = int(sign(d.y));
+                        sz = int(sign(d.z));
+                        
+                        x = int(floor(o.x));
+                        y = int(floor(o.y));
+                        z = int(floor(o.z));
+                        
+                        dx = 1.0 / abs(d.x);
+                        dy = 1.0 / abs(d.y);
+                        dz = 1.0 / abs(d.z);
+                        
+                        hsx = (1 + sx) / 2;
+                        hsy = (1 + sy) / 2;
+                        hsz = (1 + sz) / 2;
+                        
+                        mx = abs(x + hsx - o.x) * dx;
+                        my = abs(y + hsy - o.y) * dy;
+                        mz = abs(z + hsz - o.z) * dz;
+                        
+                        
+                        int mask = 3;
+                        
+                        int n = 128;
+                        int l = 0;
+                        float s = 1.0;
+                        int scale = 1;
+                        
+                        while (n >= 0) {
+                          
+                          if (mx < my) {
+                            if (mx < mz) {
+                              x += sx;
+                              mx += dx;
+                            } else {
+                              z += sz;
+                              mz += dz;
+                            }
+                          } else {
+                            if (my < mz) {
+                              y += sy;
+                              my += dy;
+                            } else {
+                              z += sz;
+                              mz += dz;
+                            }
+                          }
+
+                          visit(x,y,z);
+                        }
+                    }
+
                     void main() {
                         uint idxX = gl_GlobalInvocationID.x;
-                        uint idxY = gl_GlobalInvocationID.y;
+                        uint idxY    = gl_GlobalInvocationID.y;
 
                         ivec2 size = imageSize(image);
 
-                        imageStore(image, ivec2(idxX,idxY), vec4(idxX / float(size.x), idxY / float(size.y), 0.0, 1.0));
+                        if (idxX < size.x && idxY < size.y) {
+                            imageStore(image, ivec2(idxX,idxY), vec4(idxX / float(size.x), idxY / float(size.y), 0.0, 1.0));
+                        }
                     }
                 "
             }
@@ -158,20 +228,6 @@ fn main() {
             dimensions, 1, usage, &graphics_queue, SurfaceTransform::Identity, alpha,
             PresentMode::Fifo, FullscreenExclusive::Default, true, ColorSpace::SrgbNonLinear).unwrap()
 
-    };
-
-    // We now create a buffer that will store the shape of our quad.
-    let vertex_buffer = {
-        #[derive(Default, Debug, Clone)]
-        struct Vertex { position: [f32; 2] }
-        vulkano::impl_vertex!(Vertex, position);
-
-        CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, [
-            Vertex { position: [-1.0, -1.0] },
-            Vertex { position: [-1.0,  1.0] },
-            Vertex { position: [ 1.0, -1.0] },
-            Vertex { position: [ 1.0,  1.0] }
-        ].iter().cloned()).unwrap()
     };
 
     // At this point, OpenGL initialization would be finished. However in Vulkan it is not. OpenGL
@@ -241,6 +297,13 @@ fn main() {
     // that, we store the submission of the previous frame here.
     let mut previous_frame_end = Some(Box::new(sync::now(device.clone())) as Box<dyn GpuFuture>);
 
+    let mut fps = Timing::new();
+    const FRAME_COUNTS : i32 = 144;
+    let mut frame_counts = FRAME_COUNTS;
+    let dimensions: [u32; 2] = surface.window().inner_size().into();
+    let mut surface_width = dimensions[0];
+    let mut surface_height = dimensions[1];
+
     event_loop.run(move |event, _, control_flow| {
         match event {
             Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
@@ -250,6 +313,8 @@ fn main() {
                 recreate_swapchain = true;
             },
             Event::RedrawEventsCleared => {
+
+                fps.start_sample();
                 // It is important to call this function from time to time, otherwise resources will keep
                 // accumulating and you will eventually reach an out of memory error.
                 // Calling this function polls various fences in order to determine what the GPU has
@@ -261,6 +326,8 @@ fn main() {
                 if recreate_swapchain {
                     // Get the new dimensions of the window.
                     let dimensions: [u32; 2] = surface.window().inner_size().into();
+                    surface_width = dimensions[0];
+                    surface_height = dimensions[1];
                     let (new_swapchain, new_images) = match swapchain.recreate_with_dimensions(dimensions) {
                         Ok(r) => r,
                         // This error tends to happen when the user is manually resizing the window.
@@ -307,7 +374,9 @@ fn main() {
                 );
 
                 let raymarch_command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap()
-                    .dispatch([32,32,1], compute_pipeline.clone(), swapchain_image_set.clone(), ()).unwrap()
+                    // .dispatch([32,32,1], compute_pipeline.clone(), swapchain_image_set.clone(), ()).unwrap()
+                    // .dispatch([surface_width,surface_height,1], compute_pipeline.clone(), swapchain_image_set.clone(), ()).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], compute_pipeline.clone(), swapchain_image_set.clone(), ()).unwrap()
                     .build().unwrap();
 
                 let future = previous_frame_end.take().unwrap()
@@ -336,6 +405,15 @@ fn main() {
                         println!("Failed to flush future: {:?}", e);
                         previous_frame_end = Some(Box::new(sync::now(device.clone())) as Box<_>);
                     }
+                }
+
+                fps.end_sample();
+
+                frame_counts -= 1;
+                if frame_counts <= 0 {
+                    frame_counts = FRAME_COUNTS;
+                    let (t, t_var, fps, fps_var) = fps.stats();
+                    println!("FPS: {:.2} +/- {:.2} ({:.3}ms +/- {:.3}ms)", fps, fps_var, t * 1000.0, t_var * 1000.0);
                 }
             },
             _ => ()
