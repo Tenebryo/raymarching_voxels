@@ -5,44 +5,67 @@ layout(rgba32f, binding = 0) uniform image2D image;
 const uint CHUNK_DIM = 64;
 const uint LOG2_CHUNK_DIM = 6;
 const uint CHUNK_DIM_MASK = 0x3f;
+const uint INCIDENCE_X = 0;
+const uint INCIDENCE_Y = 1;
+const uint INCIDENCE_Z = 2;
+
+const float EPS = 1e-6;
 
 struct VoxelChunk {
-    uint occ[8192];
+    uint mat[CHUNK_DIM * CHUNK_DIM * CHUNK_DIM / 4];
 };
 
-layout(binding = 1) buffer VoxelOcc {
+struct Material {
+    vec3 color;
+    float transparency;
+    vec3 emission;
+};
+
+layout(binding = 1) buffer VoxelData {
     VoxelChunk chunks[];
 } vox;
 
-layout(push_constant) uniform PushConstantData {
+layout(binding = 2) buffer Materials {
+    Material mats[];
+} mat;
+
+layout(push_constant) uniform RenderPushConstantData {
     vec3 cam_o;
     vec3 cam_f;
     vec3 cam_u;
     ivec3 vox_chunk_dim;
+    uint render_dist;
 } pc;
 
-bool check_voxel(int x, int y, int z) {
+uint get_voxel_mat(int x, int y, int z) {
     
     int cx = x >> LOG2_CHUNK_DIM;
     int cy = y >> LOG2_CHUNK_DIM;
     int cz = z >> LOG2_CHUNK_DIM;
 
-    uint vx = (x >> 5) & CHUNK_DIM_MASK;
+    uint vx = (x >> 2) & CHUNK_DIM_MASK;
     uint vy = y & CHUNK_DIM_MASK;
     uint vz = z & CHUNK_DIM_MASK;
 
     uint chunk_idx = cx + pc.vox_chunk_dim.x * (cy + pc.vox_chunk_dim.y * cz);
     uint vox_idx = vx + CHUNK_DIM * (vy + CHUNK_DIM * vz);
-    uint bit_idx = x & 0x1f;
+    uint bit_idx = x & 0x3;
 
-    return (vox.chunks[chunk_idx].occ[vox_idx] & (1 << bit_idx)) != 0;
+    // get the correct byte
+    return (vox.chunks[chunk_idx].mat[vox_idx] >> (8 * bit_idx)) & 0xff;
 }
 
 vec3 raymarch(vec3 o, vec3 d) {
+
+    uint max_x = CHUNK_DIM * pc.vox_chunk_dim.x;
+    uint max_y = CHUNK_DIM * pc.vox_chunk_dim.y;
+    uint max_z = CHUNK_DIM * pc.vox_chunk_dim.z;
+
     float mx, my, mz, dx, dy, dz, t, dsx, dsy, dsz, ox, oy, oz;
     int sx, sy, sz, hsx, hsy, hsz, x, y, z;
-    t = 0;
+    uint incidence;
     
+    // setup calculations for stepping
     sx = int(sign(d.x));
     sy = int(sign(d.y));
     sz = int(sign(d.z));
@@ -63,31 +86,56 @@ vec3 raymarch(vec3 o, vec3 d) {
     my = abs(y + hsy - o.y) * dy;
     mz = abs(z + hsz - o.z) * dz;
     
-    uint n = 1024;
+    // max 
+    uint n = pc.render_dist;
 
     vec3 color = vec3(0.0);
     
     while (n != 0) {
         
         if (mx < my) {
-        if (mx < mz) {
-            x += sx;
-            mx += dx;
-        } else {
-            z += sz;
-            mz += dz;
-        }
-        } else {
-        if (my < mz) {
-            y += sy;
-            my += dy;
-        } else {
-            z += sz;
-            mz += dz;
-        }
+            if (mx < mz) {
+                x += sx;
+                t = mx;
+                incidence = INCIDENCE_X;
+                mx += dx;
+            } else {
+                z += sz;
+                t = mz;
+                incidence = INCIDENCE_Z;
+                mz += dz;
+            }
+            } else {
+            if (my < mz) {
+                y += sy;
+                t = my;
+                incidence = INCIDENCE_Y;
+                my += dy;
+            } else {
+                z += sz;
+                t = mz;
+                incidence = INCIDENCE_Z;
+                mz += dz;
+            }
         }
 
-        if (check_voxel(x,y,z)) {
+        // test if ray is out of bounds of the voxel data in x or z, wrap around.
+        // wrap is used so that new voxel chunks can be streamed in without moving existing chunks
+        if (x < 0) {x = int(max_x - 1);}
+        if (x >= max_x) {x = 0;}
+        if (z < 0) {z = int(max_z - 1);}
+        if (z >= max_z) {z = 0;}
+
+        // going out of bounds in the y axis means the ray goes to the skybox
+        if (y < 0 || max_y <= y) {
+            color = vec3(0.0, 0.0, 0.5);
+            break;
+        }
+
+        // check solidity of voxel
+        uint vox_mat = get_voxel_mat(x,y,z);
+
+        if (mat.mats[vox_mat].transparency < EPS) {
             color = vec3(1.0);
             break;
         }

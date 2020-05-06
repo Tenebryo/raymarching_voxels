@@ -1,0 +1,32 @@
+#version 450
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+const uint CHUNK_DIM = 64;
+const uint LOG2_CHUNK_DIM = 6;
+const uint CHUNK_DIM_MASK = 0x3f;
+
+struct VoxelChunk {
+    uint mat[CHUNK_DIM * CHUNK_DIM * CHUNK_DIM];
+};
+
+struct VoxelChunkUpdate {
+    ivec3 location;
+    uint ty;
+};
+
+layout(binding = 0) buffer VoxelData {
+    VoxelChunk chunks[];
+} vox;
+
+layout(binding = 1) buffer VoxelUpdateData {
+    VoxelChunkUpdate updates[];
+} vox_upd;
+
+layout(push_constant) uniform UpdatePushConstantData {
+    uint n_updates;
+    ivec3 vox_chunk_dim;
+} pc;
+
+void main() {
+    // do updates
+}
