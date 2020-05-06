@@ -296,9 +296,11 @@ fn main() {
             if input.key_held(VirtualKeyCode::Space) {movement += up;}
             if input.key_held(VirtualKeyCode::LShift) {movement -= up;}
 
-            let movement = movement.normalize();
+            // ensure that movement on the diagonals isn't faster
 
-            position += dt * movement;
+            if movement.magnitude() > 1e-4 {movement = movement.normalize()};
+
+            position += dt * 40.0 *  movement;
 
             let mut new_forward = forward;
 

@@ -155,7 +155,7 @@ void main() {
     if (idxX < size.x && idxY < size.y) {
         // calculate ray for this pixel by constructing a virtual screen
         vec3 vx = normalize(cross(pc.cam_f, pc.cam_u));
-        vec3 vy = normalize(cross(pc.cam_f, vx));
+        vec3 vy = normalize(cross(vx, pc.cam_f));
 
         float cx = idxX / float(size.x) - 0.5;
         float cy = idxY / float(size.y) - 0.5;
