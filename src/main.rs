@@ -150,7 +150,12 @@ fn main() {
 
 
     let [width, height]: [u32; 2] = surface.window().inner_size().into();
-    let (mut blit_images, mut tmp_images, mut screen_normals, mut screen_positions) = rebuild_intermediate_images(device.clone(), compute_queue_family.clone(), width, height);
+    let (mut blit_images, mut tmp_images, mut screen_normals, mut screen_positions) = unsafe{std::mem::uninitialized()};
+    
+    rebuild_intermediate_images(
+        device.clone(), compute_queue_family.clone(), width, height,
+        &mut blit_images, &mut tmp_images, &mut screen_normals, &mut screen_positions
+    );
 
     println!("Storage Images initialized");
     
@@ -371,14 +376,11 @@ fn main() {
                     images = new_images;
 
                     update_dynamic_state(&images, &mut dynamic_state);
-                    // {
-                    //     let (new_blit_images, new_tmp_images, new_screen_normals, new_screen_positions) = rebuild_intermediate_images(device.clone(), compute_queue_family.clone(), width, height);
 
-                    //     blit_images = new_blit_images;
-                    //     tmp_images = new_tmp_images;
-                    //     screen_normals = new_screen_normals;
-                    //     screen_positions = new_screen_positions;
-                    // }
+                    rebuild_intermediate_images(
+                        device.clone(), compute_queue.family(), width, height,
+                        &mut blit_images, &mut tmp_images, &mut screen_normals, &mut screen_positions
+                    );
 
                     recreate_swapchain = false;
                 }
@@ -577,13 +579,14 @@ fn update_dynamic_state(
     dynamic_state.viewports = Some(vec!(viewport));
 }
 
-fn rebuild_intermediate_images(device : Arc<Device>, queue_family : QueueFamily, width : u32, height : u32) -> (
-    Vec<Arc<StorageImage<Format>>>,
-    Vec<Arc<StorageImage<Format>>>,
-    Arc<StorageImage<Format>>,
-    Arc<StorageImage<Format>>
+fn rebuild_intermediate_images(
+    device : Arc<Device>, queue_family : QueueFamily, width : u32, height : u32,
+    blit_images : &mut Vec<Arc<StorageImage<Format>>>,
+    tmp_images : &mut Vec<Arc<StorageImage<Format>>>,
+    screen_normals : &mut Arc<StorageImage<Format>>,
+    screen_positions : &mut Arc<StorageImage<Format>>
 ) {
-    let blit_images = {
+    *blit_images = {
         (0..NUM_BLIT_IMAGES)
             .map(|_| {
                 StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap()
@@ -594,20 +597,18 @@ fn rebuild_intermediate_images(device : Arc<Device>, queue_family : QueueFamily,
 
     println!("Blit History initialized");
 
-    let screen_normals = {
+    *screen_normals = {
         StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap()
     };
-    let screen_positions = {
+    *screen_positions = {
         StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap()
     };
 
-    let tmp_images = {
+    *tmp_images = {
         (0..NUM_TEMP_IMAGES)
             .map(|_| {
                 StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap()
             })
             .collect::<Vec<_>>()
     };
-
-    (blit_images, tmp_images, screen_normals, screen_positions)
 }
