@@ -1,6 +1,7 @@
 mod timing;
 mod shaders;
-mod vox;
+mod noise;
+// mod vox;
 
 use timing::Timing;
 
@@ -29,10 +30,17 @@ use winit::event::{Event, WindowEvent, VirtualKeyCode};
 
 use winit_input_helper::WinitInputHelper;
 
-use cgmath::{Vector3, Quaternion, InnerSpace};
+use cgmath::prelude::*;
+use cgmath::{Vector3, Quaternion, InnerSpace, Rotation3, Rad, Rotation};
 
 use std::sync::Arc;
 use std::time::{Instant, Duration};
+use std::io::{stdout, Write};
+
+use crossterm::{
+    ExecutableCommand, execute, Result,
+    cursor::MoveUp
+};
 
 use opensimplex::OsnContext;
 
@@ -45,7 +53,9 @@ fn main() {
     let physical = PhysicalDevice::enumerate(&instance).next().unwrap();
     
     let event_loop = EventLoop::new();
-    let surface = WindowBuilder::new().build_vk_surface(&event_loop, instance.clone()).unwrap();
+    let surface = WindowBuilder::new()
+        .with_title("Voxel Renderer")
+        .build_vk_surface(&event_loop, instance.clone()).unwrap();
 
     let compute_queue_family = physical.queue_families().find(|&q| q.supports_compute()).unwrap();
     // We take the first queue that supports drawing to our window.
@@ -111,18 +121,19 @@ fn main() {
     let dimensions: [u32; 2] = surface.window().inner_size().into();
     let mut surface_width = dimensions[0];
     let mut surface_height = dimensions[1];
+    let p_start = Instant::now();
 
     let mut render_pc = shaders::RenderPushConstantData {
         cam_o : [0.0, 0.0, 0.0],
         cam_f : [0.0, 0.0, 1.0],
         cam_u : [0.0, 1.0, 0.0],
-        vox_chunk_dim : [16, 4, 16],
-        render_dist : 512,
+        vox_chunk_dim : [4, 4, 4],
+        render_dist : 1024,
+        time : p_start.elapsed().as_secs_f32(),
 
         // dummy variables for alignment
         _dummy0 : [0;4],
         _dummy1 : [0;4],
-        _dummy2 : [0;4],
     };
 
     // build the voxel data buffer
@@ -138,22 +149,49 @@ fn main() {
 
     {
         let ctx = OsnContext::new(123).unwrap();
-        
-        let mut chunk_data : Vec<u8> = Vec::with_capacity(64*64*64);
-        for z in 0..64 {
-            for y in 0..64 {
-                for x in 0..64 {
-                    chunk_data.push(if ctx.noise3(x as f64 / 64.0, y as f64 / 64.0, z as f64 / 64.0) < 0.25 {1} else {0});
-                }
-            }
-        }
 
-        let chunk_data = chunk_data.chunks_exact(4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]])).collect::<Vec<_>>();
+        let ns = noise::WorleyNoise3D::new(8);
+        
 
         let mut lock = voxel_data_buffer.write().unwrap();
 
+        let mut index = [0,0,0];
+
         for chunk in lock.iter_mut() {
+
+            let mut chunk_data : Vec<u32> = Vec::with_capacity(64*64*64);
+            for z in 0..64 {
+                for y in 0..64 {
+                    for x in 0..64 {
+
+                        let xn = (x + index[0] * 64) as f64;
+                        let yn = (y + index[1] * 64) as f64;
+                        let zn = (z + index[2] * 64) as f64;
+
+                        let noise_scale = 16.0;
+
+                        let nx = ctx.noise3(xn / noise_scale, yn / noise_scale, zn / noise_scale);
+
+                        // let nx = ns.sample(xn / noise_scale, yn / noise_scale, zn / noise_scale);
+
+                        chunk_data.push(if nx > 0.0 {1} else {0});
+                    }
+                }
+            }
+    
+            // let chunk_data = chunk_data.chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect::<Vec<_>>();
+
             chunk.mat.copy_from_slice(&chunk_data);
+
+            index[0] += 1;
+            if index[0] == render_pc.vox_chunk_dim[0] {
+                index[0] = 0;
+                index[1] += 1;
+                if index[1] == render_pc.vox_chunk_dim[1] {
+                    index[1] = 0;
+                    index[2] += 1;
+                }
+            }
         }
     }
 
@@ -166,9 +204,9 @@ fn main() {
 
         let materials = [
             // air material
-            Material {color : [0.0; 3], transparency: 0.0, emission: [0.0; 3], _dummy0: [0; 4]},
+            Material {albedo : [0.0; 3], transparency: 1.0, emission: [0.0; 3], flags: 0b00000000, roughness: 0.0, _dummy0: [0;12]},
             // solid material
-            Material {color : [0.0; 3], transparency: 0.0, emission: [0.0; 3], _dummy0: [0; 4]}
+            Material {albedo : [1.0; 3], transparency: 0.0, emission: [0.0; 3], flags: 0b00000001, roughness: 0.0, _dummy0: [0;12]}
         ];
 
         CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, materials.iter().cloned()).unwrap()
@@ -176,14 +214,35 @@ fn main() {
 
     
     println!("Material Data initialized");
+
+    // create a list of materials to render
+    let point_light_data_buffer = {
+        use shaders::PointLight;
+
+        let lights = [
+            //sun
+            PointLight {
+                position : [0.0, 1000.0, 0.0],
+                intensity : 1.0,
+                color : [1.0, 1.0, 1.0],
+                _dummy0 : [0;4]
+            }
+        ];
+
+        CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, lights.iter().cloned()).unwrap()
+    };
+
+    
+    println!("Light Data initialized");
     
     let mut input = WinitInputHelper::new();
 
     let mut forward = Vector3::new(0.0, 0.0, 1.0);
-    let mut up = Vector3::new(0.0, 1.0, 0.0);
+    let up = Vector3::new(0.0, 1.0, 0.0);
     let mut position = Vector3::new(0.0, 0.0, 0.0);
     let mut input_time = Instant::now();
-    let mut arcball_start = Vector3::new(0.0, 0.0, 0.0);
+    let mut pitch = 0.0;
+    let mut yaw = 0.0;
 
     event_loop.run(move |event, _, control_flow| {
 
@@ -237,11 +296,14 @@ fn main() {
                     recreate_swapchain = true;
                 }
 
+                render_pc.time = p_start.elapsed().as_secs_f32();
+
                 let layout = render_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
                 let swapchain_image_set = Arc::new(PersistentDescriptorSet::start(layout.clone())
                     .add_image(images[image_num].clone()).unwrap()
                     .add_buffer(voxel_data_buffer.clone()).unwrap()
                     .add_buffer(material_data_buffer.clone()).unwrap()
+                    .add_buffer(point_light_data_buffer.clone()).unwrap()
                     .build().unwrap()
                 );
 
@@ -276,9 +338,14 @@ fn main() {
 
                 frame_counts -= 1;
                 if frame_counts <= 0 {
+                    use std::f32::consts::PI;
                     frame_counts = FRAME_COUNTS;
                     let (t, t_var, fps, fps_var) = fps.stats();
+                    stdout().execute(MoveUp(4)).unwrap();
                     println!("FPS: {:.2} +/- {:.2} ({:.3}ms +/- {:.3}ms)", fps, fps_var, t * 1000.0, t_var * 1000.0);
+                    println!("Position: {:?}", position);
+                    println!("Forward: {:?}", forward);
+                    println!("P/Y: {}/{}", 180.0 * pitch / PI, 180.0 * yaw / PI);
                 }
             },
             _ => ()
@@ -288,6 +355,9 @@ fn main() {
             let mut movement = Vector3::new(0.0, 0.0, 0.0);
             let left = up.cross(forward);
             let dt = input_time.elapsed().as_secs_f32();
+            input_time = Instant::now();
+
+            let mut speed = 10.0;
 
             if input.key_held(VirtualKeyCode::W) {movement += forward;}
             if input.key_held(VirtualKeyCode::A) {movement += left;}
@@ -295,36 +365,44 @@ fn main() {
             if input.key_held(VirtualKeyCode::D) {movement -= left;}
             if input.key_held(VirtualKeyCode::Space) {movement += up;}
             if input.key_held(VirtualKeyCode::LShift) {movement -= up;}
+            if input.key_held(VirtualKeyCode::LControl) {speed = 100.0;}
 
             // ensure that movement on the diagonals isn't faster
 
             if movement.magnitude() > 1e-4 {movement = movement.normalize()};
 
-            position += dt * 40.0 *  movement;
+            position += speed * dt *  movement;
 
-            let mut new_forward = forward;
 
-            if let Some((mx, my)) = input.mouse() {
+            if let Some((_mx, _my)) = input.mouse() {
 
-                let mx = mx - surface_width as f32 / 2.0;
-                let my = my - surface_height as f32 / 2.0;
+                // let mx = mx - surface_width as f32 / 2.0;
+                // let my = my - surface_height as f32 / 2.0;
 
-                let arcball_radius = std::cmp::min(surface_width, surface_height) as f32 * 0.4;
-                let mz = arcball_radius * arcball_radius - mx * mx - my * my;
-                let arcball_vec = Vector3::new(mx, my, mz.max(0.0).sqrt()).normalize();
-                let arcball_rot = Quaternion::from_arc(arcball_start, arcball_vec, None);
+                if input.mouse_held(0) {
+                    let (dx, dy) = input.mouse_diff();
 
-                // arcball rotation
-                if input.mouse_pressed(0) { arcball_start = arcball_vec; }
-                else if input.mouse_held(0) {new_forward = arcball_rot * new_forward;}
-                else if input.mouse_released(0) {
-                    new_forward = arcball_rot * new_forward;
-                    forward = new_forward;
+                    pitch += dy / 270.0;
+                    yaw   += dx / 270.0;
+
+                    use std::f32::consts::PI;
+
+                    if pitch < - PI / 2.0 { pitch = - PI / 2.0; }
+                    if pitch > PI / 2.0 {pitch = PI / 2.0; }
+
+                    // forward = Quaternion::from_sv(yaw, Vector3::unit_y()) * (Quaternion::from_sv(pitch, Vector3::unit_x()) * Vector3::unit_z());
+                    let rot_p = Quaternion::from_angle_x(Rad(pitch));
+                    let rot_y = Quaternion::from_angle_y(Rad(-yaw));
+                    forward = rot_y.rotate_vector(rot_p.rotate_vector(Vector3::unit_z()));
+                    forward = forward.normalize();
                 }
             }
 
             render_pc.cam_o = [position.x, position.y, position.z];
-            render_pc.cam_f = [new_forward.x, new_forward.y, new_forward.z];
+            render_pc.cam_f = [forward.x, forward.y, forward.z];
+
+            
+            if input.key_held(VirtualKeyCode::Escape) {*control_flow = ControlFlow::Exit;}
         }
     });
 }

@@ -12,9 +12,9 @@ pub mod update_cs {
   }
 }
 
-
 pub use render_cs::ty::RenderPushConstantData;
 pub use update_cs::ty::UpdatePushConstantData;
 
 pub use render_cs::ty::VoxelChunk;
 pub use render_cs::ty::Material;
+pub use render_cs::ty::PointLight;

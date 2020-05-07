@@ -39,6 +39,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arc-swap"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b585a98a234c46fc563103e9278c9391fde1f4e6850334da895d27edb9580f62"
+
+[[package]]
 name = "atty"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -299,6 +305,31 @@ dependencies = [
  "autocfg 1.0.0",
  "cfg-if",
  "lazy_static",
+]
+
+[[package]]
+name = "crossterm"
+version = "0.17.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a880035bfe4707e344da9acf50cc94d003fe337f50afd94c8722c1bb4e0a933"
+dependencies = [
+ "bitflags",
+ "crossterm_winapi",
+ "lazy_static",
+ "libc",
+ "mio",
+ "parking_lot",
+ "signal-hook",
+ "winapi 0.3.8",
+]
+
+[[package]]
+name = "crossterm_winapi"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "057b7146d02fb50175fd7dbe5158f6097f33d02831f43b4ee8ae4ddf67b68f5c"
+dependencies = [
+ "winapi 0.3.8",
 ]
 
 [[package]]
@@ -1007,6 +1038,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "signal-hook"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c0893246f276ba1aac4983fb8711dad108e2886fd76bf618a382ab4e30e5bec"
+dependencies = [
+ "libc",
+ "mio",
+ "signal-hook-registry",
+]
+
+[[package]]
+name = "signal-hook-registry"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94f478ede9f64724c5d173d7bb56099ec3e2d9fc2774aac65d34b8b890405f41"
+dependencies = [
+ "arc-swap",
+ "libc",
+]
+
+[[package]]
 name = "slab"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1100,6 +1152,7 @@ name = "voxel_test"
 version = "0.1.0"
 dependencies = [
  "cgmath",
+ "crossterm",
  "env_logger",
  "log",
  "opensimplex",
