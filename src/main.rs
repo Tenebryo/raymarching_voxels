@@ -12,7 +12,7 @@ use vulkano::command_buffer::{AutoCommandBufferBuilder, DynamicState};
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use vulkano::descriptor::PipelineLayoutAbstract;
 use vulkano::device::{Device, DeviceExtensions};
-use vulkano::instance::{Instance, PhysicalDevice, QueueFamily, InstanceExtensions};
+use vulkano::instance::{Instance, PhysicalDevice, QueueFamily};
 use vulkano::pipeline::ComputePipeline;
 use vulkano::sync::{GpuFuture, FlushError};
 use vulkano::sync;
@@ -150,12 +150,7 @@ fn main() {
 
 
     let [width, height]: [u32; 2] = surface.window().inner_size().into();
-    let (mut blit_images, mut tmp_images, mut screen_normals, mut screen_positions) = unsafe{std::mem::uninitialized()};
-    
-    rebuild_intermediate_images(
-        device.clone(), compute_queue_family.clone(), width, height,
-        &mut blit_images, &mut tmp_images, &mut screen_normals, &mut screen_positions
-    );
+    let (mut blit_images, mut tmp_images, mut screen_normals, mut screen_positions) = rebuild_intermediate_images(device.clone(), compute_queue_family.clone(), width, height);
 
     println!("Storage Images initialized");
     
@@ -164,7 +159,7 @@ fn main() {
     // Constant Data
     //*************************************************************************************************************************************
 
-    let sampler = Sampler::new(device.clone(), Filter::Nearest, Filter::Nearest,
+    let sampler = Sampler::new(device.clone(), Filter::Linear, Filter::Linear,
         MipmapMode::Nearest, SamplerAddressMode::Repeat, SamplerAddressMode::Repeat,
         SamplerAddressMode::Repeat, 0.0, 1.0, 0.0, 0.0).unwrap();
 
@@ -221,9 +216,9 @@ fn main() {
     };
 
     let denoise_pc = shaders::DenoisePushConstantData {
-        c_phi : 1.0,
-        n_phi : 0.2,
-        p_phi : 3.0,
+        c_phi : 10.0,
+        n_phi : 0.1,
+        p_phi : 1.0,
         step_width : 1,
     };
     
@@ -231,7 +226,7 @@ fn main() {
 
     let mut forward = Vector3::new(0.0, 0.0, 1.0);
     let up = Vector3::new(0.0, 1.0, 0.0);
-    let mut position = Vector3::new(0.0, 0.0, 0.0);
+    let mut position = Vector3::new(0.0, 256.0, 0.0);
     let mut input_time = Instant::now();
     let mut pitch = 0.0;
     let mut yaw = 0.0;
@@ -377,10 +372,13 @@ fn main() {
 
                     update_dynamic_state(&images, &mut dynamic_state);
 
-                    rebuild_intermediate_images(
-                        device.clone(), compute_queue.family(), width, height,
-                        &mut blit_images, &mut tmp_images, &mut screen_normals, &mut screen_positions
-                    );
+                    // re-allocate buffer images
+                    let (new_blit_images, new_tmp_images, new_screen_normals, new_screen_positions) = rebuild_intermediate_images(device.clone(), compute_queue.family(), surface_width, surface_height);
+
+                    blit_images = new_blit_images;
+                    tmp_images = new_tmp_images;
+                    screen_normals = new_screen_normals;
+                    screen_positions = new_screen_positions;
 
                     recreate_swapchain = false;
                 }
@@ -455,13 +453,11 @@ fn main() {
                 let raymarch_command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap()
                     .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], render_compute_pipeline.clone(), render_set.clone(), render_pc).unwrap()
                     .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_s.clone(), DenoisePushConstantData{step_width : 1, ..denoise_pc}).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_f.clone(), DenoisePushConstantData{step_width : 2, ..denoise_pc}).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_b.clone(), DenoisePushConstantData{step_width : 3, ..denoise_pc}).unwrap()
                     .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_f.clone(), DenoisePushConstantData{step_width : 4, ..denoise_pc}).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_b.clone(), DenoisePushConstantData{step_width : 1, ..denoise_pc}).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_f.clone(), DenoisePushConstantData{step_width : 2, ..denoise_pc}).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_b.clone(), DenoisePushConstantData{step_width : 3, ..denoise_pc}).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_e.clone(), DenoisePushConstantData{step_width : 4, ..denoise_pc}).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_b.clone(), DenoisePushConstantData{step_width : 2, ..denoise_pc}).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_f.clone(), DenoisePushConstantData{step_width : 1, ..denoise_pc}).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_b.clone(), DenoisePushConstantData{step_width : 4, ..denoise_pc}).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_e.clone(), DenoisePushConstantData{step_width : 1, ..denoise_pc}).unwrap()
                     .build().unwrap();
 
                 let future = previous_frame_end.take().unwrap()
@@ -580,35 +576,35 @@ fn update_dynamic_state(
 }
 
 fn rebuild_intermediate_images(
-    device : Arc<Device>, queue_family : QueueFamily, width : u32, height : u32,
-    blit_images : &mut Vec<Arc<StorageImage<Format>>>,
-    tmp_images : &mut Vec<Arc<StorageImage<Format>>>,
-    screen_normals : &mut Arc<StorageImage<Format>>,
-    screen_positions : &mut Arc<StorageImage<Format>>
+    device : Arc<Device>, queue_family : QueueFamily, width : u32, height : u32
+) -> (
+    Vec<Arc<StorageImage<Format>>>,
+    Vec<Arc<StorageImage<Format>>>,
+    Arc<StorageImage<Format>>,
+    Arc<StorageImage<Format>>
 ) {
-    *blit_images = {
+    let blit_images = {
         (0..NUM_BLIT_IMAGES)
             .map(|_| {
                 StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap()
             })
             .collect::<Vec<_>>()
     };
-    
 
-    println!("Blit History initialized");
-
-    *screen_normals = {
-        StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap()
-    };
-    *screen_positions = {
-        StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap()
-    };
-
-    *tmp_images = {
+    let tmp_images = {
         (0..NUM_TEMP_IMAGES)
             .map(|_| {
                 StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap()
             })
             .collect::<Vec<_>>()
     };
+
+    let screen_normals = {
+        StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap()
+    };
+    let screen_positions = {
+        StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap()
+    };
+
+    (blit_images, tmp_images, screen_normals, screen_positions)
 }
