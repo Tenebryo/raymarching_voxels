@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 mod timing;
 mod shaders;
 mod noise;
@@ -10,7 +12,7 @@ use vulkano::command_buffer::{AutoCommandBufferBuilder, DynamicState};
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use vulkano::descriptor::PipelineLayoutAbstract;
 use vulkano::device::{Device, DeviceExtensions};
-use vulkano::instance::{Instance, PhysicalDevice};
+use vulkano::instance::{Instance, PhysicalDevice, QueueFamily, InstanceExtensions};
 use vulkano::pipeline::ComputePipeline;
 use vulkano::sync::{GpuFuture, FlushError};
 use vulkano::sync;
@@ -29,7 +31,6 @@ use winit::event::{Event, WindowEvent, VirtualKeyCode};
 
 use winit_input_helper::WinitInputHelper;
 
-use cgmath::prelude::*;
 use cgmath::{Vector3, Quaternion, InnerSpace, Rotation3, Rad, Rotation};
 
 use png;
@@ -37,14 +38,20 @@ use png;
 use std::io::Cursor;
 use std::sync::Arc;
 use std::time::Instant;
-use std::io::{stdout, Write};
+use std::io::stdout;
 
 use crossterm::{
-    ExecutableCommand, execute,
+    ExecutableCommand,
     cursor::MoveUp
 };
 
 use opensimplex::OsnContext;
+
+
+const BUFFER_FORMAT : Format = Format::R32G32B32A32Sfloat;
+
+const NUM_BLIT_IMAGES : usize = 4;
+const NUM_TEMP_IMAGES : usize = 2;
 
 fn main() {
 
@@ -141,40 +148,10 @@ fn main() {
 
     println!("Swapchain initialized");
 
-    const BUFFER_FORMAT : Format = Format::R32G32B32A32Sfloat;
 
-    const NUM_BLIT_IMAGES : usize = 4;
-    const NUM_TEMP_IMAGES : usize = 2;
+    let [width, height]: [u32; 2] = surface.window().inner_size().into();
+    let (mut blit_images, mut tmp_images, mut screen_normals, mut screen_positions) = rebuild_intermediate_images(device.clone(), compute_queue_family.clone(), width, height);
 
-    let mut blit_i = 0;
-    let blit_images = {
-        let [width, height]: [u32; 2] = surface.window().inner_size().into();
-        (0..NUM_BLIT_IMAGES)
-            .map(|_| {
-                StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [compute_queue_family].iter().cloned()).unwrap()
-            })
-            .collect::<Vec<_>>()
-    };
-    
-    println!("Blit History initialized");
-
-    let screen_normals = {
-        let [width, height]: [u32; 2] = surface.window().inner_size().into();
-        StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [compute_queue_family].iter().cloned()).unwrap()
-    };
-    let screen_positions = {
-        let [width, height]: [u32; 2] = surface.window().inner_size().into();
-        StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [compute_queue_family].iter().cloned()).unwrap()
-    };
-
-    let tmp_images = {
-        let [width, height]: [u32; 2] = surface.window().inner_size().into();
-        (0..NUM_TEMP_IMAGES)
-            .map(|_| {
-                StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [compute_queue_family].iter().cloned()).unwrap()
-            })
-            .collect::<Vec<_>>()
-    };
     println!("Storage Images initialized");
     
 
@@ -223,6 +200,7 @@ fn main() {
     let mut surface_width = dimensions[0];
     let mut surface_height = dimensions[1];
     let p_start = Instant::now();
+    let mut blit_i = 0;
 
     let mut render_pc = shaders::RenderPushConstantData {
         cam_o : [0.0, 0.0, 0.0],
@@ -238,9 +216,9 @@ fn main() {
     };
 
     let denoise_pc = shaders::DenoisePushConstantData {
-        c_phi : 0.5,
-        n_phi : 1.0,
-        p_phi : 1.0,
+        c_phi : 1.0,
+        n_phi : 0.2,
+        p_phi : 3.0,
         step_width : 1,
     };
     
@@ -271,7 +249,7 @@ fn main() {
     {
         let ctx = OsnContext::new(123).unwrap();
 
-        let ns = noise::WorleyNoise3D::new(8);
+        let _ns = noise::WorleyNoise3D::new(8);
         
 
         let mut lock = voxel_data_buffer.write().unwrap();
@@ -393,6 +371,15 @@ fn main() {
                     images = new_images;
 
                     update_dynamic_state(&images, &mut dynamic_state);
+                    // {
+                    //     let (new_blit_images, new_tmp_images, new_screen_normals, new_screen_positions) = rebuild_intermediate_images(device.clone(), compute_queue_family.clone(), width, height);
+
+                    //     blit_images = new_blit_images;
+                    //     tmp_images = new_tmp_images;
+                    //     screen_normals = new_screen_normals;
+                    //     screen_positions = new_screen_positions;
+                    // }
+
                     recreate_swapchain = false;
                 }
 
@@ -508,10 +495,10 @@ fn main() {
 
                     // print some debug information
                     stdout().execute(MoveUp(4)).unwrap();
-                    println!("FPS: {:.2} ({:.3}ms +/- {:.3}ms)", fps, t * 1000.0, t_var * 1000.0);
-                    println!("Position: {:?}", position);
-                    println!("Forward: {:?}", forward);
-                    println!("P/Y: {}/{}", 180.0 * pitch / PI, 180.0 * yaw / PI);
+                    println!("FPS: {:0<4.2} ({:0<5.3}ms +/- {:0<5.3}ms)  ", fps, t * 1000.0, t_var * 1000.0);
+                    println!("Position: {:0<5.3?}                        ", position);
+                    println!("Forward: {:0<5.3?}                         ", forward);
+                    println!("P/Y: {:0<5.3}/{:0<5.3}                     ", 180.0 * pitch / PI, 180.0 * yaw / PI);
                 }
             },
             _ => ()
@@ -588,4 +575,39 @@ fn update_dynamic_state(
         depth_range: 0.0 .. 1.0,
     };
     dynamic_state.viewports = Some(vec!(viewport));
+}
+
+fn rebuild_intermediate_images(device : Arc<Device>, queue_family : QueueFamily, width : u32, height : u32) -> (
+    Vec<Arc<StorageImage<Format>>>,
+    Vec<Arc<StorageImage<Format>>>,
+    Arc<StorageImage<Format>>,
+    Arc<StorageImage<Format>>
+) {
+    let blit_images = {
+        (0..NUM_BLIT_IMAGES)
+            .map(|_| {
+                StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    
+
+    println!("Blit History initialized");
+
+    let screen_normals = {
+        StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap()
+    };
+    let screen_positions = {
+        StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap()
+    };
+
+    let tmp_images = {
+        (0..NUM_TEMP_IMAGES)
+            .map(|_| {
+                StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+
+    (blit_images, tmp_images, screen_normals, screen_positions)
 }
