@@ -1,6 +1,10 @@
 #version 450
 layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
-layout(rgba32f, binding = 0) uniform image2D image;
+layout(rgba32f, binding = 0) uniform image2D cImage;
+layout(rgba32f, binding = 1) uniform image2D nImage;
+layout(rgba32f, binding = 2) uniform image2D pImage;
+// layout(rgba32f, binding = 3) readonly uniform image2D blue_noise;
+layout(binding = 3) uniform sampler2D blue_noise;
 
 #define PI 3.1415926538
 
@@ -42,23 +46,18 @@ struct PointLight {
     vec3 position;
     float intensity;
     vec3 color;
+    float size;
 };
 
-struct DirectionLight {
-    vec3 position;
-    float intensity;
-    vec3 color;
-};
-
-layout(binding = 1) buffer VoxelData {
+layout(binding = 4) buffer VoxelData {
     VoxelChunk chunks[];
 } vox;
 
-layout(binding = 2) buffer Materials {
+layout(binding = 5) buffer Materials {
     Material data[];
 } mat;
 
-layout(binding = 3) buffer PointLights {
+layout(binding = 6) buffer PointLights {
     PointLight data[];
 } point_lights;
 
@@ -70,6 +69,15 @@ layout(push_constant) uniform RenderPushConstantData {
     ivec3 vox_chunk_dim;
     uint render_dist;
 } pc;
+
+ivec2 size = ivec2(0);
+
+vec4 blue_noise_sample(ivec2 uv) {
+    return texture(blue_noise, uv / vec2(size));
+    // return texture(blue_noise, uv / vec2(size) + 10.7 * pc.time);
+    // return imageLoad(blue_noise, uv);
+    // return vec4(0);
+}
 
 uint get_voxel_mat(int x, int y, int z) {
 
@@ -193,47 +201,6 @@ bool raymarch(vec3 o, vec3 d, out float t, out uint vox_mat, out uint incidence)
     return false;
 }
 
-const float ALPHA = 0.14;
-const float INV_ALPHA = 1.0 / ALPHA;
-const float K = 2.0 / (PI * ALPHA);
-
-
-//note: uniformly distributed, normalized rand, [0;1[
-float nrand( vec2 n )
-{
-	return fract(sin(dot(n.xy, vec2(12.9898, 78.233)))* 43758.5453);
-}
-
-float inv_error_function(float x)
-{
-	float y = log(1.0 - x*x);
-	float z = K + 0.5 * y;
-	return sqrt(sqrt(z*z - y * INV_ALPHA) - z) * sign(x);
-}
-
-//note: remaps v to [0;1] in interval [a;b]
-float remap( float a, float b, float v )
-{
-	return clamp( (v-a) / (b-a), 0.0, 1.0 );
-}
-
-float gaussian_rand( vec2 n )
-{
-	float t = fract( pc.time );
-	float x = nrand( n + 0.07*t );
-    
-	return inv_error_function(x*2.0-1.0)*0.15 + 0.5;
-}
-
-vec3 gaussian_rand3( vec2 n )
-{
-    return vec3(
-        gaussian_rand(n),
-        gaussian_rand(n + vec2(0.1231, 0.5145)),
-        gaussian_rand(n + vec2(0.4014, 0.0629))
-    );
-}
-
 vec3 oren_nayar(vec3 n, vec3 dr, vec3 di, vec3 e0, uint m) {
     vec3 albedo = mat.data[m].albedo;
     float v = mat.data[m].roughness;
@@ -251,7 +218,7 @@ vec3 oren_nayar(vec3 n, vec3 dr, vec3 di, vec3 e0, uint m) {
     vec3 proj_r = normalize(dr - dot_r * n);
     vec3 proj_i = normalize(di - dot_i * n);
 
-    float planar_angle = acos(dot(proj_i, proj_r));
+    float planar_cos = dot(proj_i, proj_r);
 
     float alpha = max(tr, ti);
     float beta = min(tr, ti);
@@ -259,26 +226,26 @@ vec3 oren_nayar(vec3 n, vec3 dr, vec3 di, vec3 e0, uint m) {
     float a = 1 - 0.5 * vv / (vv + 0.33);
     float b = 0.45 * vv / (vv + 0.09);
 
-    vec3 lr = (cos(ti) * (a + b * max(planar_angle, 0) * sin(alpha) * tan(beta)) / PI) * albedo * e0;
+    vec3 lr = (cos(ti) * (a + b * max(planar_cos, 0) * sin(alpha) * tan(beta)) / PI) * albedo * e0;
 
     return lr;
 }
 
+
 void main() {
-    uint idxX = gl_GlobalInvocationID.x;
-    uint idxY = gl_GlobalInvocationID.y;
+    ivec2 idx = ivec2(
+        gl_GlobalInvocationID.x,
+        gl_GlobalInvocationID.y
+    );
 
-    ivec2 size = imageSize(image);
+    size = imageSize(cImage);
 
-    if (idxX < size.x && idxY < size.y) {
+    if (idx.x < size.x && idx.y < size.y) {
         // calculate ray for this pixel by constructing a virtual screen
         vec3 vx = normalize(cross(pc.cam_f, pc.cam_u));
         vec3 vy = normalize(cross(pc.cam_f, vx));
 
-        vec2 screen_coord = vec2(
-            idxX / float(size.x),
-            idxY / float(size.y)
-        );
+        vec2 screen_coord = vec2(idx) / vec2(size);
 
         float cx = screen_coord.x - 0.5;
         float cy = screen_coord.y - 0.5;
@@ -301,6 +268,9 @@ void main() {
 
         int i = 0;
         vec3 color = vec3(0.0);
+        vec3 normal = vec3(0.0);
+        vec3 position = vec3(0.0);
+
         vec3 ambient_light = vec3(0.1);
 
         if ((o.y < 0 && d.y < 0) || (o.y > size_y && d.y > 0)) {
@@ -312,25 +282,21 @@ void main() {
             bool hit = raymarch(o, d, t, vox_mat, incidence);
 
             if (hit) {
-                vec3 ho = o + (t - 1e-3) * d;
-                vec3 lp = point_lights.data[0].position + 100 * vec3(
-                    nrand(screen_coord + pc.time) - 0.5,
-                    nrand(5 * screen_coord + pc.time) - 0.5,
-                    nrand(11 * screen_coord + pc.time) - 0.5
-                );
+                normal = INCIDENCE_NORMALS[incidence];
+                position = o + (t - 1e-3) * d;
+                vec3 lp = point_lights.data[0].position + point_lights.data[0].size * blue_noise_sample(idx).xyz;
 
-                vec3 ld = lp - ho;
+                vec3 ld = lp - position;
                 float l_dist = length(ld);
                 ld /= l_dist;
                 float lt = 0.0;
                 uint light_mat = 0;
                 uint light_incidence = 0;
-                bool occluded = raymarch(ho, ld, lt, light_mat, light_incidence);
+                bool occluded = raymarch(position, ld, lt, light_mat, light_incidence);
 
                 if (occluded) {
                     color = ambient_light * CHEATY_NORMAL_COLORS[incidence];
                 } else {
-                    vec3 n = INCIDENCE_NORMALS[incidence];
                     color = CHEATY_NORMAL_COLORS[incidence];
                     
                     // color = oren_nayar(n, -d, ld, point_lights.data[0].color, vox_mat);
@@ -339,8 +305,8 @@ void main() {
                 color = vec3(0.5, 0.5, 1.0);
             }
         }
-        imageStore(image, ivec2(idxX,idxY), vec4(color, 1.0));
-
-        // imageStore(image, ivec2(idxX,idxY), vec4(idxX / float(size.x), idxY / float(size.y), 0.0, 1.0));
+        imageStore(cImage, idx, vec4(color, 1.0));
+        imageStore(nImage, idx, vec4(normal, 1.0));
+        imageStore(pImage, idx, vec4(position, 1.0));
     }
 }

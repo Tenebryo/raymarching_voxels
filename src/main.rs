@@ -10,14 +10,13 @@ use vulkano::command_buffer::{AutoCommandBufferBuilder, DynamicState};
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use vulkano::descriptor::PipelineLayoutAbstract;
 use vulkano::device::{Device, DeviceExtensions};
-use vulkano::instance::{Instance, InstanceExtensions, PhysicalDevice};
+use vulkano::instance::{Instance, PhysicalDevice};
 use vulkano::pipeline::ComputePipeline;
 use vulkano::sync::{GpuFuture, FlushError};
 use vulkano::sync;
 
-use vulkano::framebuffer::{Framebuffer, FramebufferAbstract, Subpass, RenderPassAbstract};
-use vulkano::image::{SwapchainImage, StorageImage, Dimensions};
-use vulkano::pipeline::GraphicsPipeline;
+use vulkano::image::{SwapchainImage, StorageImage, ImmutableImage, Dimensions};
+use vulkano::sampler::{Sampler, SamplerAddressMode, Filter, MipmapMode};
 use vulkano::pipeline::viewport::Viewport;
 use vulkano::swapchain::{AcquireError, PresentMode, SurfaceTransform, Swapchain, SwapchainCreationError, ColorSpace, FullscreenExclusive};
 use vulkano::swapchain;
@@ -33,18 +32,26 @@ use winit_input_helper::WinitInputHelper;
 use cgmath::prelude::*;
 use cgmath::{Vector3, Quaternion, InnerSpace, Rotation3, Rad, Rotation};
 
+use png;
+
+use std::io::Cursor;
 use std::sync::Arc;
-use std::time::{Instant, Duration};
+use std::time::Instant;
 use std::io::{stdout, Write};
 
 use crossterm::{
-    ExecutableCommand, execute, Result,
+    ExecutableCommand, execute,
     cursor::MoveUp
 };
 
 use opensimplex::OsnContext;
 
 fn main() {
+
+    //*************************************************************************************************************************************
+    // Device Initialization
+    //*************************************************************************************************************************************
+
     // As with other examples, the first step is to create an instance.
     let required_extensions = vulkano_win::required_extensions();
     let instance = Instance::new(None, &required_extensions, None).unwrap();
@@ -76,6 +83,10 @@ fn main() {
     let graphics_queue = queues.next().unwrap();
 
     println!("Device initialized");
+    
+    //*************************************************************************************************************************************
+    // Compute Pipeline Creation
+    //*************************************************************************************************************************************
 
     // build rendering compute pipeline
     let render_compute_pipeline = Arc::new({
@@ -86,7 +97,30 @@ fn main() {
         ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
     });
 
+    // build update compute pipeline
+    let _update_compute_pipeline = Arc::new({
+        // raytracing shader
+        use shaders::update_cs;
+
+        let shader = update_cs::Shader::load(device.clone()).unwrap();
+        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
+    });
+
+    // build denoise compute pipeline
+    let denoise_compute_pipeline = Arc::new({
+        // raytracing shader
+        use shaders::denoise_cs;
+
+        let shader = denoise_cs::Shader::load(device.clone()).unwrap();
+        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
+    });
+
     println!("Render Pipeline initialized");
+
+    
+    //*************************************************************************************************************************************
+    // Screen Buffer Allocation
+    //*************************************************************************************************************************************
 
     // build a swapchain compatible with the window surface we built earlier
     let (mut swapchain, mut images) = {
@@ -107,15 +141,82 @@ fn main() {
 
     println!("Swapchain initialized");
 
+    const BUFFER_FORMAT : Format = Format::R32G32B32A32Sfloat;
+
+    const NUM_BLIT_IMAGES : usize = 4;
+    const NUM_TEMP_IMAGES : usize = 2;
+
+    let mut blit_i = 0;
+    let blit_images = {
+        let [width, height]: [u32; 2] = surface.window().inner_size().into();
+        (0..NUM_BLIT_IMAGES)
+            .map(|_| {
+                StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [compute_queue_family].iter().cloned()).unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    
+    println!("Blit History initialized");
+
+    let screen_normals = {
+        let [width, height]: [u32; 2] = surface.window().inner_size().into();
+        StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [compute_queue_family].iter().cloned()).unwrap()
+    };
+    let screen_positions = {
+        let [width, height]: [u32; 2] = surface.window().inner_size().into();
+        StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [compute_queue_family].iter().cloned()).unwrap()
+    };
+
+    let tmp_images = {
+        let [width, height]: [u32; 2] = surface.window().inner_size().into();
+        (0..NUM_TEMP_IMAGES)
+            .map(|_| {
+                StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [compute_queue_family].iter().cloned()).unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    println!("Storage Images initialized");
+    
+
+    //*************************************************************************************************************************************
+    // Constant Data
+    //*************************************************************************************************************************************
+
+    let sampler = Sampler::new(device.clone(), Filter::Nearest, Filter::Nearest,
+        MipmapMode::Nearest, SamplerAddressMode::Repeat, SamplerAddressMode::Repeat,
+        SamplerAddressMode::Repeat, 0.0, 1.0, 0.0, 0.0).unwrap();
+
+    let (blue_noise_tex, load_future) = {
+        let png_bytes = include_bytes!("../data/LDR_RGBA_0.png").to_vec();
+        let cursor = Cursor::new(png_bytes);
+        let decoder = png::Decoder::new(cursor);
+        let (info, mut reader) = decoder.read_info().unwrap();
+        let dimensions = Dimensions::Dim2d { width: info.width, height: info.height };
+        let mut image_data = Vec::new();
+        image_data.resize((info.width * info.height * 4) as usize, 0);
+        reader.next_frame(&mut image_data).unwrap();
+
+        ImmutableImage::from_iter(
+            image_data.iter().cloned(),
+            dimensions,
+            Format::R8G8B8A8Srgb,
+            compute_queue.clone()
+        ).unwrap()
+    };
+    
+    //*************************************************************************************************************************************
+    // Miscellaneous constants
+    //*************************************************************************************************************************************
+
     let mut dynamic_state = DynamicState { line_width: None, viewports: None, scissors: None, compare_mask: None, write_mask: None, reference: None };
 
     update_dynamic_state(&images, &mut dynamic_state);
 
     let mut recreate_swapchain = false;
 
-    let mut previous_frame_end = Some(Box::new(sync::now(device.clone())) as Box<dyn GpuFuture>);
+    let mut previous_frame_end = Some(Box::new(load_future) as Box<dyn GpuFuture>);
 
-    let mut fps = Timing::new();
+    let mut fps = Timing::new(256);
     const FRAME_COUNTS : i32 = 144;
     let mut frame_counts = FRAME_COUNTS;
     let dimensions: [u32; 2] = surface.window().inner_size().into();
@@ -127,7 +228,7 @@ fn main() {
         cam_o : [0.0, 0.0, 0.0],
         cam_f : [0.0, 0.0, 1.0],
         cam_u : [0.0, 1.0, 0.0],
-        vox_chunk_dim : [4, 4, 4],
+        vox_chunk_dim : [8, 8, 4],
         render_dist : 1024,
         time : p_start.elapsed().as_secs_f32(),
 
@@ -135,6 +236,26 @@ fn main() {
         _dummy0 : [0;4],
         _dummy1 : [0;4],
     };
+
+    let denoise_pc = shaders::DenoisePushConstantData {
+        c_phi : 0.5,
+        n_phi : 1.0,
+        p_phi : 1.0,
+        step_width : 1,
+    };
+    
+    let mut input = WinitInputHelper::new();
+
+    let mut forward = Vector3::new(0.0, 0.0, 1.0);
+    let up = Vector3::new(0.0, 1.0, 0.0);
+    let mut position = Vector3::new(0.0, 0.0, 0.0);
+    let mut input_time = Instant::now();
+    let mut pitch = 0.0;
+    let mut yaw = 0.0;
+
+    //*************************************************************************************************************************************
+    // Voxel, Material, and Light Data Allocation and Generation
+    //*************************************************************************************************************************************
 
     // build the voxel data buffer
     let voxel_data_buffer = unsafe {
@@ -168,7 +289,7 @@ fn main() {
                         let yn = (y + index[1] * 64) as f64;
                         let zn = (z + index[2] * 64) as f64;
 
-                        let noise_scale = 16.0;
+                        let noise_scale = 64.0;
 
                         let nx = ctx.noise3(xn / noise_scale, yn / noise_scale, zn / noise_scale);
 
@@ -225,24 +346,18 @@ fn main() {
                 position : [0.0, 1000.0, 0.0],
                 intensity : 1.0,
                 color : [1.0, 1.0, 1.0],
-                _dummy0 : [0;4]
+                size : 100.0,
             }
         ];
 
         CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, lights.iter().cloned()).unwrap()
     };
 
+    //*************************************************************************************************************************************
+    // Main Event Loop
+    //*************************************************************************************************************************************
     
     println!("Light Data initialized");
-    
-    let mut input = WinitInputHelper::new();
-
-    let mut forward = Vector3::new(0.0, 0.0, 1.0);
-    let up = Vector3::new(0.0, 1.0, 0.0);
-    let mut position = Vector3::new(0.0, 0.0, 0.0);
-    let mut input_time = Instant::now();
-    let mut pitch = 0.0;
-    let mut yaw = 0.0;
 
     event_loop.run(move |event, _, control_flow| {
 
@@ -298,17 +413,66 @@ fn main() {
 
                 render_pc.time = p_start.elapsed().as_secs_f32();
 
-                let layout = render_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
-                let swapchain_image_set = Arc::new(PersistentDescriptorSet::start(layout.clone())
-                    .add_image(images[image_num].clone()).unwrap()
+                // TODO: maybe cache DescriptorSets and modify them rather than construct them over and over
+                let render_layout = render_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
+                let render_set = Arc::new(PersistentDescriptorSet::start(render_layout.clone())
+                    // .add_image(images[image_num].clone()).unwrap()
+                    .add_image(blit_images[blit_i].clone()).unwrap()
+                    .add_image(screen_normals.clone()).unwrap()
+                    .add_image(screen_positions.clone()).unwrap()
+                    // .add_image(blue_noise_tex.clone()).unwrap()
+                    .add_sampled_image(blue_noise_tex.clone(), sampler.clone()).unwrap()
                     .add_buffer(voxel_data_buffer.clone()).unwrap()
                     .add_buffer(material_data_buffer.clone()).unwrap()
                     .add_buffer(point_light_data_buffer.clone()).unwrap()
                     .build().unwrap()
                 );
+                
+                let denoise_layout = denoise_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
+                let denoise_set_s = Arc::new(PersistentDescriptorSet::start(denoise_layout.clone())
+                    .add_image(blit_images[blit_i].clone()).unwrap()
+                    .add_image(screen_normals.clone()).unwrap()
+                    .add_image(screen_positions.clone()).unwrap()
+                    .add_image(tmp_images[0].clone()).unwrap()
+                    .build().unwrap()
+                );
+                let denoise_set_f = Arc::new(PersistentDescriptorSet::start(denoise_layout.clone())
+                    .add_image(tmp_images[0].clone()).unwrap()
+                    .add_image(screen_normals.clone()).unwrap()
+                    .add_image(screen_positions.clone()).unwrap()
+                    .add_image(tmp_images[1].clone()).unwrap()
+                    .build().unwrap()
+                );
+                let denoise_set_b = Arc::new(PersistentDescriptorSet::start(denoise_layout.clone())
+                    .add_image(tmp_images[1].clone()).unwrap()
+                    .add_image(screen_normals.clone()).unwrap()
+                    .add_image(screen_positions.clone()).unwrap()
+                    .add_image(tmp_images[0].clone()).unwrap()
+                    .build().unwrap()
+                );
+                let denoise_set_e = Arc::new(PersistentDescriptorSet::start(denoise_layout.clone())
+                    .add_image(tmp_images[0].clone()).unwrap()
+                    .add_image(screen_normals.clone()).unwrap()
+                    .add_image(screen_positions.clone()).unwrap()
+                    .add_image(images[image_num].clone()).unwrap()
+                    .build().unwrap()
+                );
 
+                blit_i = (blit_i + 1) % 4;
+
+                use shaders::DenoisePushConstantData;
+
+                // we build a 
                 let raymarch_command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], render_compute_pipeline.clone(), swapchain_image_set.clone(), render_pc).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], render_compute_pipeline.clone(), render_set.clone(), render_pc).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_s.clone(), DenoisePushConstantData{step_width : 1, ..denoise_pc}).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_f.clone(), DenoisePushConstantData{step_width : 2, ..denoise_pc}).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_b.clone(), DenoisePushConstantData{step_width : 3, ..denoise_pc}).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_f.clone(), DenoisePushConstantData{step_width : 4, ..denoise_pc}).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_b.clone(), DenoisePushConstantData{step_width : 1, ..denoise_pc}).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_f.clone(), DenoisePushConstantData{step_width : 2, ..denoise_pc}).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_b.clone(), DenoisePushConstantData{step_width : 3, ..denoise_pc}).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_e.clone(), DenoisePushConstantData{step_width : 4, ..denoise_pc}).unwrap()
                     .build().unwrap();
 
                 let future = previous_frame_end.take().unwrap()
@@ -340,9 +504,11 @@ fn main() {
                 if frame_counts <= 0 {
                     use std::f32::consts::PI;
                     frame_counts = FRAME_COUNTS;
-                    let (t, t_var, fps, fps_var) = fps.stats();
+                    let (t, t_var, fps, _) = fps.stats();
+
+                    // print some debug information
                     stdout().execute(MoveUp(4)).unwrap();
-                    println!("FPS: {:.2} +/- {:.2} ({:.3}ms +/- {:.3}ms)", fps, fps_var, t * 1000.0, t_var * 1000.0);
+                    println!("FPS: {:.2} ({:.3}ms +/- {:.3}ms)", fps, t * 1000.0, t_var * 1000.0);
                     println!("Position: {:?}", position);
                     println!("Forward: {:?}", forward);
                     println!("P/Y: {}/{}", 180.0 * pitch / PI, 180.0 * yaw / PI);
@@ -351,6 +517,7 @@ fn main() {
             _ => ()
         }
         
+        // input handling
         if input.update(event) {
             let mut movement = Vector3::new(0.0, 0.0, 0.0);
             let left = up.cross(forward);

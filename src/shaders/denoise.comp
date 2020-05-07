@@ -1,8 +1,90 @@
 #version 450
 layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
-layout(rgba32f, binding = 0) uniform image2D image;
+// color from raytracing
+layout(rgba32f, binding = 0) uniform image2D c;
+// normal map
+layout(rgba32f, binding = 1) uniform image2D n;
+// world coordinates
+layout(rgba32f, binding = 2) uniform image2D p;
+// output
+layout(rgba32f, binding = 3) uniform image2D o;
+// kernel information
 
+layout(push_constant) uniform DenoisePushConstantData {
+    float c_phi, n_phi, p_phi;
+    int step_width;
+} pc;
+
+// gaussian filter
+const float kernel[25] = {
+    1.0 / 273,  4.0 / 273,  7.0 / 273,  4.0 / 273,  1.0 / 273, 
+    4.0 / 273, 16.0 / 273, 26.0 / 273, 16.0 / 273,  4.0 / 273, 
+    7.0 / 273, 26.0 / 273, 41.0 / 273, 26.0 / 273,  7.0 / 273, 
+    4.0 / 273, 16.0 / 273, 26.0 / 273, 16.0 / 273,  1.0 / 273, 
+    1.0 / 273,  4.0 / 273,  7.0 / 273,  4.0 / 273,  1.0 / 273
+};
+
+// filter offsets
+const ivec2 offset[25] = {
+    ivec2(-2, -2), ivec2(-1, -2), ivec2(0, -2), ivec2(1, -2), ivec2(2, -2), 
+    ivec2(-2, -1), ivec2(-1, -1), ivec2(0, -1), ivec2(1, -1), ivec2(2, -1), 
+    ivec2(-2,  0), ivec2(-1,  0), ivec2(0,  0), ivec2(1,  0), ivec2(2,  0), 
+    ivec2(-2,  1), ivec2(-1,  1), ivec2(0,  1), ivec2(1,  1), ivec2(2,  1), 
+    ivec2(-2,  2), ivec2(-1,  2), ivec2(0,  2), ivec2(1,  2), ivec2(2,  2)
+};
+
+
+// implement edge avoiding a`trous filtering for denoising
+// code based on https://jo.dreggn.org/home/2010_atrous.pdf
+vec4 atrous_filter(ivec2 p_uv) {
+
+    int stepwidth = pc.step_width;
+
+    vec4 sum = vec4(0.0);
+    ivec2 _step = ivec2(1);
+    float c_phi = pc.c_phi;
+    float n_phi = pc.n_phi;
+    float p_phi = pc.p_phi;
+    // resolution
+    vec4 cval = imageLoad(c, p_uv);
+    vec4 nval = imageLoad(n, p_uv);
+    vec4 pval = imageLoad(p, p_uv);
+
+
+    float cum_w = 0.0;
+    for(int i = 0; i < 25; i++) {
+        ivec2 uv = p_uv + offset[i].xy * _step * stepwidth;
+        vec4 ctmp = imageLoad(c, uv);
+        vec4 t = cval - ctmp;
+        float dist2 = dot(t,t);
+        float c_w = min(exp(-(dist2) / c_phi), 1.0);
+        vec4 ntmp = imageLoad(n, uv);
+        t = nval - ntmp;
+        dist2 = max(dot(t, t) / (stepwidth * stepwidth), 0.0);
+        float n_w = min(exp(-(dist2) / n_phi), 1.0);
+        vec4 ptmp = imageLoad(p, uv);
+        t = pval - ptmp;
+        dist2 = dot(t, t);
+        float p_w = min(exp(-(dist2) / p_phi), 1.0);
+        float weight = c_w * n_w * p_w;
+        sum += ctmp * weight * kernel[i].x;
+        cum_w += weight * kernel[i].x;
+    }
+    return sum/cum_w;
+}
 
 void main() {
-    
+
+    ivec2 idx = ivec2(
+        gl_GlobalInvocationID.x,
+        gl_GlobalInvocationID.y
+    );
+
+    ivec2 isize = imageSize(c);
+
+    if (idx.x < isize.x && idx.y < isize.y) {
+        // passthrough
+        // imageStore(o, idx, imageLoad(c, idx));
+        imageStore(o, idx, atrous_filter(idx));
+    }
 }
