@@ -73,8 +73,8 @@ layout(push_constant) uniform RenderPushConstantData {
 ivec2 size = ivec2(0);
 
 vec4 blue_noise_sample(ivec2 uv) {
-    return texture(blue_noise, uv / vec2(size));
-    // return texture(blue_noise, uv / vec2(size) + 10.7 * pc.time);
+    // return texture(blue_noise, uv / vec2(size));
+    return texture(blue_noise, uv / vec2(size) + 10.7 * pc.time);
     // return imageLoad(blue_noise, uv);
     // return vec4(0);
 }

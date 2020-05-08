@@ -22,7 +22,7 @@ use vulkano::sampler::{Sampler, SamplerAddressMode, Filter, MipmapMode};
 use vulkano::pipeline::viewport::Viewport;
 use vulkano::swapchain::{AcquireError, PresentMode, SurfaceTransform, Swapchain, SwapchainCreationError, ColorSpace, FullscreenExclusive};
 use vulkano::swapchain;
-use vulkano::format::Format;
+use vulkano::format::{Format, ClearValue};
 
 use vulkano_win::VkSurfaceBuild;
 use winit::window::{WindowBuilder, Window};
@@ -50,7 +50,7 @@ use opensimplex::OsnContext;
 
 const BUFFER_FORMAT : Format = Format::R32G32B32A32Sfloat;
 
-const NUM_BLIT_IMAGES : usize = 4;
+const NUM_BUFFERS : usize = 4;
 const NUM_TEMP_IMAGES : usize = 2;
 
 fn main() {
@@ -122,6 +122,24 @@ fn main() {
         ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
     });
 
+    // build denoise compute pipeline
+    let reproject_compute_pipeline = Arc::new({
+        // raytracing shader
+        use shaders::reproject_cs;
+
+        let shader = reproject_cs::Shader::load(device.clone()).unwrap();
+        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
+    });
+
+    // build denoise compute pipeline
+    let accumulate_compute_pipeline = Arc::new({
+        // raytracing shader
+        use shaders::accumulate_cs;
+
+        let shader = accumulate_cs::Shader::load(device.clone()).unwrap();
+        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
+    });
+
     println!("Render Pipeline initialized");
 
     
@@ -130,7 +148,7 @@ fn main() {
     //*************************************************************************************************************************************
 
     // build a swapchain compatible with the window surface we built earlier
-    let (mut swapchain, mut images) = {
+    let (mut swapchain, mut swapchain_images) = {
         let caps = surface.capabilities(physical).unwrap();
         let usage = caps.supported_usage_flags;
 
@@ -150,7 +168,7 @@ fn main() {
 
 
     let [width, height]: [u32; 2] = surface.window().inner_size().into();
-    let (mut blit_images, mut tmp_images, mut screen_normals, mut screen_positions) = rebuild_intermediate_images(device.clone(), compute_queue_family.clone(), width, height);
+    let (mut image_buffers, mut depth_buffers, mut tmp_images, mut screen_normals, mut screen_positions) = rebuild_intermediate_images(device.clone(), compute_queue_family.clone(), width, height);
 
     println!("Storage Images initialized");
     
@@ -187,7 +205,7 @@ fn main() {
 
     let mut dynamic_state = DynamicState { line_width: None, viewports: None, scissors: None, compare_mask: None, write_mask: None, reference: None };
 
-    update_dynamic_state(&images, &mut dynamic_state);
+    update_dynamic_state(&swapchain_images, &mut dynamic_state);
 
     let mut recreate_swapchain = false;
 
@@ -200,7 +218,16 @@ fn main() {
     let mut surface_width = dimensions[0];
     let mut surface_height = dimensions[1];
     let p_start = Instant::now();
-    let mut blit_i = 0;
+
+    let mut input = WinitInputHelper::new();
+
+    let mut forward = Vector3::new(0.0, 0.0, 1.0);
+    let up = Vector3::new(0.0, 1.0, 0.0);
+    let mut position = Vector3::new(0.0, 256.0, 0.0);
+    let mut old_position = Vector3::new(0.0, 256.0, 0.0);
+    let mut input_time = Instant::now();
+    let mut pitch = 0.0;
+    let mut yaw = 0.0;
 
     let mut render_pc = shaders::RenderPushConstantData {
         cam_o : [0.0, 0.0, 0.0],
@@ -218,19 +245,21 @@ fn main() {
     let denoise_pc = shaders::DenoisePushConstantData {
         c_phi : 10.0,
         n_phi : 0.1,
-        p_phi : 1.0,
+        p_phi : 2.0,
         step_width : 1,
     };
+
+    let mut reproject_pc = shaders::ReprojectPushConstantData {
+        movement : [0.0; 3],
+        old_forward : [forward.x, forward.y, forward.z],
+        new_forward : [forward.x, forward.y, forward.z],
+        up : [up.x, up.y, up.z],
+        reproject_type : 0,
+
+        _dummy0 : [0; 4],
+        _dummy1 : [0; 4],
+    };
     
-    let mut input = WinitInputHelper::new();
-
-    let mut forward = Vector3::new(0.0, 0.0, 1.0);
-    let up = Vector3::new(0.0, 1.0, 0.0);
-    let mut position = Vector3::new(0.0, 256.0, 0.0);
-    let mut input_time = Instant::now();
-    let mut pitch = 0.0;
-    let mut yaw = 0.0;
-
     //*************************************************************************************************************************************
     // Voxel, Material, and Light Data Allocation and Generation
     //*************************************************************************************************************************************
@@ -368,14 +397,16 @@ fn main() {
                     };
 
                     swapchain = new_swapchain;
-                    images = new_images;
+                    swapchain_images = new_images;
 
-                    update_dynamic_state(&images, &mut dynamic_state);
+                    update_dynamic_state(&swapchain_images, &mut dynamic_state);
 
                     // re-allocate buffer images
-                    let (new_blit_images, new_tmp_images, new_screen_normals, new_screen_positions) = rebuild_intermediate_images(device.clone(), compute_queue.family(), surface_width, surface_height);
+                    let (new_image_buffers, new_depth_buffers, new_tmp_images, new_screen_normals, new_screen_positions) = 
+                        rebuild_intermediate_images(device.clone(), compute_queue.family(), surface_width, surface_height);
 
-                    blit_images = new_blit_images;
+                    image_buffers = new_image_buffers;
+                    depth_buffers = new_depth_buffers;
                     tmp_images = new_tmp_images;
                     screen_normals = new_screen_normals;
                     screen_positions = new_screen_positions;
@@ -399,12 +430,16 @@ fn main() {
                 }
 
                 render_pc.time = p_start.elapsed().as_secs_f32();
+                reproject_pc.new_forward = [forward.x, forward.y, forward.z];
+                reproject_pc.movement = [position.x - old_position.x, position.y - old_position.y, position.z - old_position.z];
+                old_position = position;
 
                 // TODO: maybe cache DescriptorSets and modify them rather than construct them over and over
+                // would need to rebuild them whenever the window is resized, since the referenced buffers are remade
                 let render_layout = render_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
                 let render_set = Arc::new(PersistentDescriptorSet::start(render_layout.clone())
                     // .add_image(images[image_num].clone()).unwrap()
-                    .add_image(blit_images[blit_i].clone()).unwrap()
+                    .add_image(image_buffers[0].clone()).unwrap()
                     .add_image(screen_normals.clone()).unwrap()
                     .add_image(screen_positions.clone()).unwrap()
                     // .add_image(blue_noise_tex.clone()).unwrap()
@@ -414,50 +449,89 @@ fn main() {
                     .add_buffer(point_light_data_buffer.clone()).unwrap()
                     .build().unwrap()
                 );
+
+                let accumulate_layout = accumulate_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
+                let accumulate_set = Arc::new(PersistentDescriptorSet::start(accumulate_layout.clone())
+                        .add_image(tmp_images[0].clone()).unwrap()
+                        // TODO: make the buffer size dynamic
+                        .enter_array().unwrap()
+                        .add_image(image_buffers[0].clone()).unwrap()
+                        .add_image(image_buffers[1].clone()).unwrap()
+                        .add_image(image_buffers[2].clone()).unwrap()
+                        .add_image(image_buffers[3].clone()).unwrap()
+                        .leave_array().unwrap()
+                        .build().unwrap()
+                );
                 
                 let denoise_layout = denoise_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
-                let denoise_set_s = Arc::new(PersistentDescriptorSet::start(denoise_layout.clone())
-                    .add_image(blit_images[blit_i].clone()).unwrap()
-                    .add_image(screen_normals.clone()).unwrap()
-                    .add_image(screen_positions.clone()).unwrap()
-                    .add_image(tmp_images[0].clone()).unwrap()
-                    .build().unwrap()
-                );
-                let denoise_set_f = Arc::new(PersistentDescriptorSet::start(denoise_layout.clone())
+                let denoise_set_01 = Arc::new(PersistentDescriptorSet::start(denoise_layout.clone())
                     .add_image(tmp_images[0].clone()).unwrap()
                     .add_image(screen_normals.clone()).unwrap()
                     .add_image(screen_positions.clone()).unwrap()
                     .add_image(tmp_images[1].clone()).unwrap()
                     .build().unwrap()
                 );
-                let denoise_set_b = Arc::new(PersistentDescriptorSet::start(denoise_layout.clone())
+                let denoise_set_10 = Arc::new(PersistentDescriptorSet::start(denoise_layout.clone())
                     .add_image(tmp_images[1].clone()).unwrap()
                     .add_image(screen_normals.clone()).unwrap()
                     .add_image(screen_positions.clone()).unwrap()
                     .add_image(tmp_images[0].clone()).unwrap()
                     .build().unwrap()
                 );
-                let denoise_set_e = Arc::new(PersistentDescriptorSet::start(denoise_layout.clone())
+                let denoise_set_end = Arc::new(PersistentDescriptorSet::start(denoise_layout.clone())
                     .add_image(tmp_images[0].clone()).unwrap()
                     .add_image(screen_normals.clone()).unwrap()
                     .add_image(screen_positions.clone()).unwrap()
-                    .add_image(images[image_num].clone()).unwrap()
+                    .add_image(swapchain_images[image_num].clone()).unwrap()
                     .build().unwrap()
                 );
 
-                blit_i = (blit_i + 1) % 4;
+                let reproject_layout = reproject_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
+                let reproject_sets = (0..(NUM_BUFFERS - 1)).rev().map(|i| (
+                        i,
+                        // in the reprojection stage, images first get
+                        Arc::new(PersistentDescriptorSet::start(reproject_layout.clone())
+                            .add_sampled_image(image_buffers[i].clone(), sampler.clone()).unwrap()
+                            .add_sampled_image(depth_buffers[i].clone(), sampler.clone()).unwrap()
+                            .add_image(tmp_images[0].clone()).unwrap()
+                            .add_image(tmp_images[1].clone()).unwrap()
+                            .build().unwrap()
+                        ),
+                        Arc::new(PersistentDescriptorSet::start(reproject_layout.clone())
+                            .add_sampled_image(tmp_images[0].clone(), sampler.clone()).unwrap()
+                            .add_sampled_image(tmp_images[1].clone(), sampler.clone()).unwrap()
+                            .add_image(image_buffers[i + 1].clone()).unwrap()
+                            .add_image(depth_buffers[i + 1].clone()).unwrap()
+                            .build().unwrap()
+                        )
+                    ))
+                    .collect::<Vec<_>>();
 
                 use shaders::DenoisePushConstantData;
+                use shaders::ReprojectPushConstantData;
 
-                // we build a 
-                let raymarch_command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap()
+                // we build a command buffer for this frame
+                // needs to be built each frame because we don't know which swapchain image we will be told to render to
+                // its possible a command buffer could be built for each swapchain ahead of time, but that would add complexity
+                let mut raymarch_command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap();
+
+                // reproject old frames
+                for (i, rproj_pos_set, rproj_rot_set) in reproject_sets {
+                    raymarch_command_buffer = raymarch_command_buffer
+                        .clear_color_image(image_buffers[i+1].clone(), ClearValue::Float([0.0; 4])).unwrap()
+                        .clear_color_image(depth_buffers[i+1].clone(), ClearValue::Float([1.0e6; 4])).unwrap()
+                        .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], reproject_compute_pipeline.clone(), rproj_pos_set.clone(), ReprojectPushConstantData{reproject_type: 0, ..reproject_pc}).unwrap()
+                        .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], reproject_compute_pipeline.clone(), rproj_rot_set.clone(), ReprojectPushConstantData{reproject_type: 0, ..reproject_pc}).unwrap()
+
+                }
+
+                // render
+                let raymarch_command_buffer = raymarch_command_buffer
                     .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], render_compute_pipeline.clone(), render_set.clone(), render_pc).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_s.clone(), DenoisePushConstantData{step_width : 1, ..denoise_pc}).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_f.clone(), DenoisePushConstantData{step_width : 4, ..denoise_pc}).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_b.clone(), DenoisePushConstantData{step_width : 2, ..denoise_pc}).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_f.clone(), DenoisePushConstantData{step_width : 1, ..denoise_pc}).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_b.clone(), DenoisePushConstantData{step_width : 4, ..denoise_pc}).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_e.clone(), DenoisePushConstantData{step_width : 1, ..denoise_pc}).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], accumulate_compute_pipeline.clone(), accumulate_set.clone(), ()).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_01.clone(), DenoisePushConstantData{step_width : 1, ..denoise_pc}).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_10.clone(), DenoisePushConstantData{step_width : 1, n_phi: 1.0, ..denoise_pc}).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_end.clone(), DenoisePushConstantData{step_width : 1, n_phi: 1.0, ..denoise_pc}).unwrap()
                     .build().unwrap();
 
                 let future = previous_frame_end.take().unwrap()
@@ -481,6 +555,8 @@ fn main() {
                         previous_frame_end = Some(Box::new(sync::now(device.clone())) as Box<_>);
                     }
                 }
+
+                reproject_pc.old_forward = reproject_pc.new_forward;
 
                 // FPS information
                 fps.end_sample();
@@ -575,36 +651,30 @@ fn update_dynamic_state(
     dynamic_state.viewports = Some(vec!(viewport));
 }
 
+// When the window is resized, the various screen-shaped buffers need to be resized
+// this is done often and is a bit repetitive, so it is its own function
 fn rebuild_intermediate_images(
     device : Arc<Device>, queue_family : QueueFamily, width : u32, height : u32
 ) -> (
     Vec<Arc<StorageImage<Format>>>,
     Vec<Arc<StorageImage<Format>>>,
+    Vec<Arc<StorageImage<Format>>>,
     Arc<StorageImage<Format>>,
     Arc<StorageImage<Format>>
 ) {
-    let blit_images = {
-        (0..NUM_BLIT_IMAGES)
-            .map(|_| {
-                StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap()
-            })
-            .collect::<Vec<_>>()
-    };
+    let image_buffers = (0..NUM_BUFFERS)
+            .map(|_| { StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap() })
+            .collect::<Vec<_>>();
+    let depth_buffers = (0..NUM_BUFFERS)
+            .map(|_| { StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Sfloat, [queue_family].iter().cloned()).unwrap() })
+            .collect::<Vec<_>>();
 
-    let tmp_images = {
-        (0..NUM_TEMP_IMAGES)
-            .map(|_| {
-                StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap()
-            })
-            .collect::<Vec<_>>()
-    };
+    let tmp_images = (0..NUM_TEMP_IMAGES)
+            .map(|_| { StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap() })
+            .collect::<Vec<_>>();
 
-    let screen_normals = {
-        StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap()
-    };
-    let screen_positions = {
-        StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap()
-    };
+    let screen_normals = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap();
+    let screen_positions = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap();
 
-    (blit_images, tmp_images, screen_normals, screen_positions)
+    (image_buffers, depth_buffers, tmp_images, screen_normals, screen_positions)
 }

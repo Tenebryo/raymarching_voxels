@@ -19,10 +19,25 @@ pub mod denoise_cs {
   }
 }
 
+pub mod reproject_cs {
+  vulkano_shaders::shader!{
+      ty: "compute",
+      path: "src/shaders/reproject.comp",
+  }
+}
+
+pub mod accumulate_cs {
+  vulkano_shaders::shader!{
+      ty: "compute",
+      path: "src/shaders/accumulate.comp",
+  }
+}
+
 // Push Constant Types
 pub use render_cs::ty::RenderPushConstantData;
 pub use update_cs::ty::UpdatePushConstantData;
 pub use denoise_cs::ty::DenoisePushConstantData;
+pub use reproject_cs::ty::ReprojectPushConstantData;
 
 // Graphics Primitive Types
 pub use render_cs::ty::VoxelChunk;
