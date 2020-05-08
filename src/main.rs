@@ -177,7 +177,11 @@ fn main() {
     // Constant Data
     //*************************************************************************************************************************************
 
-    let sampler = Sampler::new(device.clone(), Filter::Linear, Filter::Linear,
+    let lin_sampler = Sampler::new(device.clone(), Filter::Linear, Filter::Linear,
+        MipmapMode::Linear, SamplerAddressMode::Repeat, SamplerAddressMode::Repeat,
+        SamplerAddressMode::Repeat, 0.0, 1.0, 0.0, 0.0).unwrap();
+
+    let nst_sampler = Sampler::new(device.clone(), Filter::Nearest, Filter::Nearest,
         MipmapMode::Nearest, SamplerAddressMode::Repeat, SamplerAddressMode::Repeat,
         SamplerAddressMode::Repeat, 0.0, 1.0, 0.0, 0.0).unwrap();
 
@@ -223,8 +227,8 @@ fn main() {
 
     let mut forward = Vector3::new(0.0, 0.0, 1.0);
     let up = Vector3::new(0.0, 1.0, 0.0);
-    let mut position = Vector3::new(0.0, 256.0, 0.0);
-    let mut old_position = Vector3::new(0.0, 256.0, 0.0);
+    let mut position = Vector3::new(0.0, 300.0, 0.0);
+    let mut old_position = position;
     let mut input_time = Instant::now();
     let mut pitch = 0.0;
     let mut yaw = 0.0;
@@ -243,9 +247,9 @@ fn main() {
     };
 
     let denoise_pc = shaders::DenoisePushConstantData {
-        c_phi : 10.0,
-        n_phi : 0.1,
-        p_phi : 2.0,
+        c_phi : 4.0,
+        n_phi : 0.2,
+        p_phi : 1.0,
         step_width : 1,
     };
 
@@ -353,7 +357,7 @@ fn main() {
                 position : [0.0, 1000.0, 0.0],
                 intensity : 1.0,
                 color : [1.0, 1.0, 1.0],
-                size : 100.0,
+                size : 5.0,
             }
         ];
 
@@ -442,8 +446,9 @@ fn main() {
                     .add_image(image_buffers[0].clone()).unwrap()
                     .add_image(screen_normals.clone()).unwrap()
                     .add_image(screen_positions.clone()).unwrap()
+                    .add_image(depth_buffers[0].clone()).unwrap()
                     // .add_image(blue_noise_tex.clone()).unwrap()
-                    .add_sampled_image(blue_noise_tex.clone(), sampler.clone()).unwrap()
+                    .add_sampled_image(blue_noise_tex.clone(), nst_sampler.clone()).unwrap()
                     .add_buffer(voxel_data_buffer.clone()).unwrap()
                     .add_buffer(material_data_buffer.clone()).unwrap()
                     .add_buffer(point_light_data_buffer.clone()).unwrap()
@@ -464,6 +469,7 @@ fn main() {
                 );
                 
                 let denoise_layout = denoise_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
+                // descriptor set for denoising iteration reading tmp_images[0] and writing tmp_images[1]
                 let denoise_set_01 = Arc::new(PersistentDescriptorSet::start(denoise_layout.clone())
                     .add_image(tmp_images[0].clone()).unwrap()
                     .add_image(screen_normals.clone()).unwrap()
@@ -471,6 +477,7 @@ fn main() {
                     .add_image(tmp_images[1].clone()).unwrap()
                     .build().unwrap()
                 );
+                // descriptor set for denoising iteration reading tmp_images[1] and writing tmp_images[0]
                 let denoise_set_10 = Arc::new(PersistentDescriptorSet::start(denoise_layout.clone())
                     .add_image(tmp_images[1].clone()).unwrap()
                     .add_image(screen_normals.clone()).unwrap()
@@ -478,6 +485,7 @@ fn main() {
                     .add_image(tmp_images[0].clone()).unwrap()
                     .build().unwrap()
                 );
+                // descriptor set for denoising iteration reading tmp_images[0] and writing to the next swapchain image
                 let denoise_set_end = Arc::new(PersistentDescriptorSet::start(denoise_layout.clone())
                     .add_image(tmp_images[0].clone()).unwrap()
                     .add_image(screen_normals.clone()).unwrap()
@@ -486,20 +494,21 @@ fn main() {
                     .build().unwrap()
                 );
 
+                //
                 let reproject_layout = reproject_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
                 let reproject_sets = (0..(NUM_BUFFERS - 1)).rev().map(|i| (
                         i,
                         // in the reprojection stage, images first get
                         Arc::new(PersistentDescriptorSet::start(reproject_layout.clone())
-                            .add_sampled_image(image_buffers[i].clone(), sampler.clone()).unwrap()
-                            .add_sampled_image(depth_buffers[i].clone(), sampler.clone()).unwrap()
+                            .add_sampled_image(image_buffers[i].clone(), lin_sampler.clone()).unwrap()
+                            .add_sampled_image(depth_buffers[i].clone(), lin_sampler.clone()).unwrap()
                             .add_image(tmp_images[0].clone()).unwrap()
                             .add_image(tmp_images[1].clone()).unwrap()
                             .build().unwrap()
                         ),
                         Arc::new(PersistentDescriptorSet::start(reproject_layout.clone())
-                            .add_sampled_image(tmp_images[0].clone(), sampler.clone()).unwrap()
-                            .add_sampled_image(tmp_images[1].clone(), sampler.clone()).unwrap()
+                            .add_sampled_image(tmp_images[0].clone(), lin_sampler.clone()).unwrap()
+                            .add_sampled_image(tmp_images[1].clone(), lin_sampler.clone()).unwrap()
                             .add_image(image_buffers[i + 1].clone()).unwrap()
                             .add_image(depth_buffers[i + 1].clone()).unwrap()
                             .build().unwrap()
@@ -520,7 +529,7 @@ fn main() {
                     raymarch_command_buffer = raymarch_command_buffer
                         .clear_color_image(image_buffers[i+1].clone(), ClearValue::Float([0.0; 4])).unwrap()
                         .clear_color_image(depth_buffers[i+1].clone(), ClearValue::Float([1.0e6; 4])).unwrap()
-                        .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], reproject_compute_pipeline.clone(), rproj_pos_set.clone(), ReprojectPushConstantData{reproject_type: 0, ..reproject_pc}).unwrap()
+                        .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], reproject_compute_pipeline.clone(), rproj_pos_set.clone(), ReprojectPushConstantData{reproject_type: 1, ..reproject_pc}).unwrap()
                         .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], reproject_compute_pipeline.clone(), rproj_rot_set.clone(), ReprojectPushConstantData{reproject_type: 0, ..reproject_pc}).unwrap()
 
                 }
@@ -529,9 +538,11 @@ fn main() {
                 let raymarch_command_buffer = raymarch_command_buffer
                     .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], render_compute_pipeline.clone(), render_set.clone(), render_pc).unwrap()
                     .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], accumulate_compute_pipeline.clone(), accumulate_set.clone(), ()).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_01.clone(), DenoisePushConstantData{step_width : 1, ..denoise_pc}).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_10.clone(), DenoisePushConstantData{step_width : 1, n_phi: 1.0, ..denoise_pc}).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_end.clone(), DenoisePushConstantData{step_width : 1, n_phi: 1.0, ..denoise_pc}).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_01.clone(),  DenoisePushConstantData{step_width : 4, ..denoise_pc}).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_10.clone(),  DenoisePushConstantData{step_width : 3, ..denoise_pc}).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_01.clone(),  DenoisePushConstantData{step_width : 2, ..denoise_pc}).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_10.clone(),  DenoisePushConstantData{step_width : 1, ..denoise_pc}).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_end.clone(), DenoisePushConstantData{step_width : 1, ..denoise_pc}).unwrap()
                     .build().unwrap();
 
                 let future = previous_frame_end.take().unwrap()

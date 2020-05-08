@@ -3,8 +3,9 @@ layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 layout(rgba32f, binding = 0) uniform image2D cImage;
 layout(rgba32f, binding = 1) uniform image2D nImage;
 layout(rgba32f, binding = 2) uniform image2D pImage;
+layout(rgba32f, binding = 3) uniform image2D dImage;
 // layout(rgba32f, binding = 3) readonly uniform image2D blue_noise;
-layout(binding = 3) uniform sampler2D blue_noise;
+layout(binding = 4) uniform sampler2D blue_noise;
 
 #define PI 3.1415926538
 
@@ -49,15 +50,15 @@ struct PointLight {
     float size;
 };
 
-layout(binding = 4) buffer VoxelData {
+layout(binding = 5) buffer VoxelData {
     VoxelChunk chunks[];
 } vox;
 
-layout(binding = 5) buffer Materials {
+layout(binding = 6) buffer Materials {
     Material data[];
 } mat;
 
-layout(binding = 6) buffer PointLights {
+layout(binding = 7) buffer PointLights {
     PointLight data[];
 } point_lights;
 
@@ -74,9 +75,22 @@ ivec2 size = ivec2(0);
 
 vec4 blue_noise_sample(ivec2 uv) {
     // return texture(blue_noise, uv / vec2(size));
-    return texture(blue_noise, uv / vec2(size) + 10.7 * pc.time);
+    return texture(blue_noise, uv / vec2(size) + cos(33 * pc.time) * sin(50 * pc.time));
     // return imageLoad(blue_noise, uv);
     // return vec4(0);
+}
+
+vec2 box_muller_transform(vec2 u) {
+    float c0 = sqrt(-2 * log(u.x));
+    float c1 = 2 * PI * u.y;
+    return c0 * vec2(cos(c1), sin(c1));
+}
+
+vec4 box_muller_transform(vec4 u) {
+    u.wx = box_muller_transform(u.wx);
+    u.yz = box_muller_transform(u.yz);
+
+    return u;
 }
 
 uint get_voxel_mat(int x, int y, int z) {
@@ -231,6 +245,10 @@ vec3 oren_nayar(vec3 n, vec3 dr, vec3 di, vec3 e0, uint m) {
     return lr;
 }
 
+vec3 blinn_phong(vec3 n, vec3 dr, vec3 di, uint m) {
+    return vec3(0);
+}
+
 
 void main() {
     ivec2 idx = ivec2(
@@ -258,11 +276,15 @@ void main() {
         float size_z = float(CHUNK_DIM * pc.vox_chunk_dim.z);
 
         vec3 o = pc.cam_o;
-    
+
+        float depth = 0.0;
+
         if (o.y < 0 && d.y > 0) {
+            depth = (o.y / d.y);
             o -= (o.y / d.y) * d;
         }
         if (o.y > size_y && d.y < 0) {
+            depth = ((o.y - size_y) / d.y);
             o -= ((o.y - size_y) / d.y) * d;
         }
 
@@ -276,15 +298,17 @@ void main() {
         if ((o.y < 0 && d.y < 0) || (o.y > size_y && d.y > 0)) {
             color = vec3(0.5, 0.5, 1.0);
         } else {
-            float t = 0;
             uint vox_mat = 0;
             uint incidence = 0;
+            float t = 0;
             bool hit = raymarch(o, d, t, vox_mat, incidence);
+
+            depth += t;
 
             if (hit) {
                 normal = INCIDENCE_NORMALS[incidence];
                 position = o + (t - 1e-3) * d;
-                vec3 lp = point_lights.data[0].position + point_lights.data[0].size * blue_noise_sample(idx).xyz;
+                vec3 lp = point_lights.data[0].position + point_lights.data[0].size * box_muller_transform(blue_noise_sample(idx)).xyz;
 
                 vec3 ld = lp - position;
                 float l_dist = length(ld);
@@ -308,5 +332,6 @@ void main() {
         imageStore(cImage, idx, vec4(color, 1.0));
         imageStore(nImage, idx, vec4(normal, 1.0));
         imageStore(pImage, idx, vec4(position, 1.0));
+        imageStore(dImage, idx, vec4(depth));
     }
 }

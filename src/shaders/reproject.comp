@@ -38,7 +38,7 @@ void pos_reproject() {
         vec2 uv = idx / vec2(size);
 
         vec3 vx = normalize(cross(forward, up));
-        vec3 vy = normalize(cross(up, vx));
+        vec3 vy = normalize(cross(vx, forward));
 
         // we calculate the displacement relative to the screen the image is from
         vec3 displacement = vec3(
@@ -48,22 +48,21 @@ void pos_reproject() {
         );
 
         float new_depth = texture(dImage, uv).r + displacement.z;
-        vec4 color = texture(cImage, uv) + displacement.z;
+        vec4 color = texture(cImage, uv);
 
-        vec2 new_uv = uv + displacement.xy / new_depth;
+        vec2 new_uv = uv - displacement.xy / new_depth;
         
-        ivec2 new_idx = ivec2(size * new_uv);
+        ivec2 new_idx = ivec2(round(size * new_uv));
 
         if (0 <= new_idx.x && new_idx.x < size.x && 0 <= new_idx.y && new_idx.y < size.y) {
             imageStore(ncImage, new_idx, color);
-            imageStore(ncImage, new_idx, vec4(new_depth));
+            imageStore(ndImage, new_idx, vec4(new_depth));
         }
     }
 }
 
 // rotation reprojection is relatively simple, since we are assuming that rays from
-// the previous image are projected from the same origin. In order for this to be the
-// case, either the movement has to be small or the
+// the previous image are projected from the same origin.
 void rot_reproject() {
     
     ivec2 idx = ivec2(
@@ -76,7 +75,7 @@ void rot_reproject() {
     if (idx.x < size.x && idx.y < size.y) {
         // calculate ray for this pixel by constructing a virtual screen
         vec3 vx = normalize(cross(new_forward, up));
-        vec3 vy = normalize(cross(up, vx));
+        vec3 vy = normalize(cross(vx, new_forward));
 
         vec2 screen_coord = vec2(idx) / vec2(size);
 
@@ -87,8 +86,8 @@ void rot_reproject() {
         vec3 d = new_forward + cx * vx + cy * vy;
 
         //calculate the corresponding pixel from the old image
-        vec3 ovx = normalize(cross(new_forward, up));
-        vec3 ovy = normalize(cross(up, vx));
+        vec3 ovx = normalize(cross(old_forward, up));
+        vec3 ovy = normalize(cross(ovx, old_forward));
 
         vec2 uv = vec2(dot(d, ovx), dot(d, ovy)) + 0.5;
 
@@ -103,6 +102,10 @@ void rot_reproject() {
     }
 }
 
+
+// 6-axis reprojection is achieved by separating the 6-axis movement of the camera between
+// frames into 3-axis movement and rotation components. Each is accomplished in one of the 
+// functions above. 
 void main() {
     switch (reproject_type) {
         case REPROJECT_ROT:
