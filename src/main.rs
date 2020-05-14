@@ -248,6 +248,7 @@ fn main() {
         vdim : [256, 256, 128],
         render_dist : 1064.0,
         time : p_start.elapsed().as_secs_f32(),
+        gamma : 1.0,
 
         // dummy variables for alignment
         _dummy0 : [0;4],
@@ -343,9 +344,9 @@ fn main() {
 
         let materials = [
             // air material
-            Material {albedo : [0.0; 3], transparency: 1.0, emission: [0.0; 3], flags: 0b00000000, roughness: 0.0, _dummy0: [0;12]},
+            Material {albedo : [0.0; 3], transparency: 1.0, emission: [0.0; 3], flags: 0b00000000, roughness: 0.0, shininess: 0.3, _dummy0: [0;8]},
             // solid material
-            Material {albedo : [1.0; 3], transparency: 0.0, emission: [0.0; 3], flags: 0b00000001, roughness: 0.0, _dummy0: [0;12]}
+            Material {albedo : [1.0; 3], transparency: 0.0, emission: [0.0; 3], flags: 0b00000001, roughness: 0.0, shininess: 0.3, _dummy0: [0;8]}
         ];
 
         CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, materials.iter().cloned()).unwrap()
@@ -362,8 +363,8 @@ fn main() {
             //sun
             PointLight {
                 position : [0.0, 1000.0, 0.0],
-                intensity : 1.0,
-                color : [1.0, 1.0, 1.0],
+                intensity : 1.0e5,
+                color : [0.5, 1.0, 1.0],
                 size : 5.0,
             }
         ];
@@ -549,8 +550,6 @@ fn main() {
                 let raymarch_command_buffer = raymarch_command_buffer
                     .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], render_compute_pipeline.clone(), render_set.clone(), render_pc).unwrap()
                     .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], accumulate_compute_pipeline.clone(), accumulate_set.clone(), ()).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_01.clone(),  DenoisePushConstantData{step_width : 4, ..denoise_pc}).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_10.clone(),  DenoisePushConstantData{step_width : 3, ..denoise_pc}).unwrap()
                     .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_01.clone(),  DenoisePushConstantData{step_width : 2, ..denoise_pc}).unwrap()
                     .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_10.clone(),  DenoisePushConstantData{step_width : 1, ..denoise_pc}).unwrap()
                     .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_end.clone(), DenoisePushConstantData{step_width : 1, ..denoise_pc}).unwrap()

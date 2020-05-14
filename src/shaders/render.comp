@@ -41,6 +41,7 @@ struct Material {
     vec3 emission;
     uint flags;
     float roughness;
+    float shininess;
 };
 
 struct PointLight {
@@ -69,6 +70,7 @@ layout(push_constant) uniform RenderPushConstantData {
     vec3 cam_u;
     ivec3 vdim;
     float render_dist;
+    float gamma;
 };
 
 ivec2 size = ivec2(0);
@@ -99,6 +101,8 @@ bool raymarch(vec3 o, vec3 d, out float t, out uint vox_mat, out uint incidence)
     uint max_y = vdim.y;
     uint max_z = vdim.z;
 
+    uint max_xyz = max_x * max_y * max_z;
+
     
     if (o.y < 0 && d.y > 0) {
         o -= (o.y / d.y) * d;
@@ -110,36 +114,29 @@ bool raymarch(vec3 o, vec3 d, out float t, out uint vox_mat, out uint incidence)
     o = vec3(mod(o.x, max_x), o.y, mod(o.z, max_z));
 
     t = 0;
-
-    float mx, my, mz, dx, dy, dz, dsx, dsy, dsz, ox, oy, oz;
-    int sx, sy, sz, hsx, hsy, hsz, x, y, z, ix, iy, iz;
     
     // setup calculations for stepping
-    sx = int(sign(d.x));
-    sy = int(sign(d.y));
-    sz = int(sign(d.z));
+    int sx = int(sign(d.x));
+    int sy = int(sign(d.y));
+    int sz = int(sign(d.z));
     
-    ix = sx;
-    iy = sy * vdim.x;
-    iz = sz * vdim.x * vdim.y;
+    int ix = sx;
+    int iy = sy * vdim.x;
+    int iz = sz * vdim.x * vdim.y;
     
-    x = int(floor(o.x));
-    y = int(floor(o.y));
-    z = int(floor(o.z));
+    int x = int(floor(o.x));
+    int y = int(floor(o.y));
+    int z = int(floor(o.z));
     
     // 1.0/0.0 == INF in GLSL float implementation, which is convenient for
     // this application
-    dx = 1.0 / abs(d.x);
-    dy = 1.0 / abs(d.y);
-    dz = 1.0 / abs(d.z);
+    float dx = 1.0 / abs(d.x);
+    float dy = 1.0 / abs(d.y);
+    float dz = 1.0 / abs(d.z);
     
-    hsx = (1 + sx) / 2;
-    hsy = (1 + sy) / 2;
-    hsz = (1 + sz) / 2;
-    
-    mx = abs(x + hsx - o.x) * dx;
-    my = abs(y + hsy - o.y) * dy;
-    mz = abs(z + hsz - o.z) * dz;
+    float mx = abs(x + (1 + sx) / 2 - o.x) * dx;
+    float my = abs(y + (1 + sy) / 2 - o.y) * dy;
+    float mz = abs(z + (1 + sz) / 2 - o.z) * dz;
     
     //calculate the voxel index of the original 
     uint vox_idx = x + vdim.x * (y + vdim.y * z);
@@ -195,11 +192,11 @@ bool raymarch(vec3 o, vec3 d, out float t, out uint vox_mat, out uint incidence)
         }
         if (z < 0) {
             z = int(max_z - 1);
-            vox_idx += max_x * max_y * max_z;
+            vox_idx += max_xyz;
         }
         if (z >= max_z) {
             z = 0;
-            vox_idx -= max_x * max_y * max_z;
+            vox_idx -= max_xyz;
         }
 
         // going out of bounds in the y axis means the ray goes to the skybox
@@ -258,8 +255,41 @@ vec3 oren_nayar(vec3 n, vec3 dr, vec3 di, vec3 e0, uint m) {
     return lr;
 }
 
-vec3 blinn_phong(vec3 n, vec3 dr, vec3 di, uint m) {
-    return vec3(0);
+vec3 blinn_phong(vec3 n, vec3 v, vec3 c, PointLight l, Material m) {
+
+    vec3 ambient_color = vec3(0.1);
+    vec3 diffuse_color = m.albedo;
+    vec3 spec_color = vec3(1.0);
+    vec3 light_color = l.color;
+
+    vec3 di = l.position - v;
+    vec3 dr = normalize(c - v);
+
+
+    float distance = length(di);
+
+    di = normalize(di);
+
+    float lambertian = max(dot(di, n), 0.0);
+    float specular = 0.0;
+
+    if (lambertian > 0.0) {
+
+        vec3 dh = normalize(di + dr);
+
+        float spec_angle = max(dot(dh, n), 0.0);
+
+        specular = pow(spec_angle, m.shininess);
+
+    }
+
+    distance *= distance;
+
+    vec3 color_linear = ambient_color +
+                        diffuse_color * lambertian * light_color * l.intensity / distance +
+                        spec_color * specular * light_color * l.intensity / distance;
+
+    return pow(color_linear, vec3(1.0 / gamma));
 }
 
 
@@ -283,6 +313,8 @@ void main() {
 
         // the ray direction for this pixel
         vec3 d = cam_f + cx * vx + cy * vy;
+
+        float ds[3] = {sign(d.x), sign(d.y), sign(d.z)};
 
         float size_x = float(vdim.x);
         float size_y = float(vdim.y);
@@ -334,7 +366,8 @@ void main() {
                 if (occluded) {
                     color = ambient_light * CHEATY_NORMAL_COLORS[incidence];
                 } else {
-                    color = CHEATY_NORMAL_COLORS[incidence];
+                    // color = INCIDENCE_NORMALS[incidence];
+                    color = blinn_phong(-ds[incidence] * INCIDENCE_NORMALS[incidence], position, cam_o, point_lights.data[0], materials[vox_mat]);
                     
                     // color = oren_nayar(n, -d, ld, point_lights.data[0].color, vox_mat);
                 }
