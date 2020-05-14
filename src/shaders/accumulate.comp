@@ -1,6 +1,6 @@
 #version 450
 // keep this in sync with code in main
-#define NUM_BUFFERS 4
+#define NUM_BUFFERS 8
 
 layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 layout(rgba32f, binding = 0) uniform image2D image;
@@ -20,14 +20,19 @@ void main() {
     if (idx.x < size.x && idx.y < size.y) {
         vec3 color = vec3(0);
         float weight = 0;
-        for (int i = int(NUM_BUFFERS) - 1; i >= 0; i--) {
+        float power = 1.0;
+        float decay = 1.0;
+        for (int i = 0; i < NUM_BUFFERS; i++) {
             vec4 img_color = imageLoad(images[i], idx);
             
-            color += img_color.a * img_color.rgb;
-            weight += img_color.a;
+            float w = power * img_color.a;
+            color += w * img_color.rgb;
+            weight += w;
+            power *= decay;
         }
         color /= weight;
 
         imageStore(image, idx, vec4(color, 1.0));
+        // imageStore(image, idx, imageLoad(images[1], idx));
     }
 }

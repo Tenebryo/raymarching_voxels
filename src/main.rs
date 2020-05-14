@@ -50,7 +50,7 @@ use opensimplex::OsnContext;
 
 const BUFFER_FORMAT : Format = Format::R32G32B32A32Sfloat;
 
-const NUM_BUFFERS : usize = 4;
+const NUM_BUFFERS : usize = 8;
 const NUM_TEMP_IMAGES : usize = 2;
 
 fn main() {
@@ -227,7 +227,7 @@ fn main() {
 
     let mut forward = Vector3::new(0.0, 0.0, 1.0);
     let up = Vector3::new(0.0, 1.0, 0.0);
-    let mut position = Vector3::new(0.0, 300.0, 0.0);
+    let mut position = Vector3::new(0.0, 512.0, 0.0);
     let mut old_position = position;
     let mut input_time = Instant::now();
     let mut pitch = 0.0;
@@ -460,10 +460,14 @@ fn main() {
                         .add_image(tmp_images[0].clone()).unwrap()
                         // TODO: make the buffer size dynamic
                         .enter_array().unwrap()
-                        .add_image(image_buffers[0].clone()).unwrap()
-                        .add_image(image_buffers[1].clone()).unwrap()
-                        .add_image(image_buffers[2].clone()).unwrap()
-                        .add_image(image_buffers[3].clone()).unwrap()
+                            .add_image(image_buffers[0].clone()).unwrap()
+                            .add_image(image_buffers[1].clone()).unwrap()
+                            .add_image(image_buffers[2].clone()).unwrap()
+                            .add_image(image_buffers[3].clone()).unwrap()
+                            .add_image(image_buffers[4].clone()).unwrap()
+                            .add_image(image_buffers[5].clone()).unwrap()
+                            .add_image(image_buffers[6].clone()).unwrap()
+                            .add_image(image_buffers[7].clone()).unwrap()
                         .leave_array().unwrap()
                         .build().unwrap()
                 );
@@ -500,15 +504,15 @@ fn main() {
                         i,
                         // in the reprojection stage, images first get
                         Arc::new(PersistentDescriptorSet::start(reproject_layout.clone())
-                            .add_sampled_image(image_buffers[i].clone(), lin_sampler.clone()).unwrap()
-                            .add_sampled_image(depth_buffers[i].clone(), lin_sampler.clone()).unwrap()
+                            .add_sampled_image(image_buffers[i].clone(), nst_sampler.clone()).unwrap()
+                            .add_sampled_image(depth_buffers[i].clone(), nst_sampler.clone()).unwrap()
                             .add_image(tmp_images[0].clone()).unwrap()
                             .add_image(tmp_images[1].clone()).unwrap()
                             .build().unwrap()
                         ),
                         Arc::new(PersistentDescriptorSet::start(reproject_layout.clone())
-                            .add_sampled_image(tmp_images[0].clone(), lin_sampler.clone()).unwrap()
-                            .add_sampled_image(tmp_images[1].clone(), lin_sampler.clone()).unwrap()
+                            .add_sampled_image(tmp_images[0].clone(), nst_sampler.clone()).unwrap()
+                            .add_sampled_image(tmp_images[1].clone(), nst_sampler.clone()).unwrap()
                             .add_image(image_buffers[i + 1].clone()).unwrap()
                             .add_image(depth_buffers[i + 1].clone()).unwrap()
                             .build().unwrap()

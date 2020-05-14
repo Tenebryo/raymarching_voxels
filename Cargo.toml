@@ -1,5 +1,5 @@
 [package]
-name = "voxel_test"
+name = "voxel_renderer"
 version = "0.1.0"
 authors = ["sunbl"]
 edition = "2018"

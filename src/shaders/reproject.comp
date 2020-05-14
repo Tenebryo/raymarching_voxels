@@ -85,6 +85,8 @@ void rot_reproject() {
         // the ray direction for this pixel
         vec3 d = new_forward + cx * vx + cy * vy;
 
+        d *= length(old_forward) / dot(d, old_forward);
+
         //calculate the corresponding pixel from the old image
         vec3 ovx = normalize(cross(old_forward, up));
         vec3 ovy = normalize(cross(ovx, old_forward));
