@@ -7,14 +7,17 @@ layout(rgba32f, binding = 3) uniform image2D dImage;
 // layout(rgba32f, binding = 3) readonly uniform image2D blue_noise;
 layout(binding = 4) uniform sampler2D blue_noise;
 
+// must be a power of 2
+layout(constant_id=0) const int BITS_PER_VOXEL = 16;
+const int VOXELS_PER_UINT = 32 / BITS_PER_VOXEL;
+const int VOXEL_MAT_MASK = (1 << BITS_PER_VOXEL) - 1;
+
 #define PI 3.1415926538
 
-const uint CHUNK_DIM = 64;
-const uint LOG2_CHUNK_DIM = 6;
-const uint CHUNK_DIM_MASK = 0x3f;
 const uint INCIDENCE_X = 0;
 const uint INCIDENCE_Y = 1;
 const uint INCIDENCE_Z = 2;
+
 const vec3 INCIDENCE_NORMALS[3] = {
     vec3(1, 0, 0),
     vec3(0, 1, 0),
@@ -31,9 +34,6 @@ const uint FLAG_SOLID = 1 << 0;
 
 const float EPS = 1e-6;
 
-struct VoxelChunk {
-    uint mat[CHUNK_DIM * CHUNK_DIM * CHUNK_DIM];
-};
 
 struct Material {
     vec3 albedo;
@@ -51,12 +51,12 @@ struct PointLight {
 };
 
 layout(binding = 5) buffer VoxelData {
-    VoxelChunk chunks[];
-} vox;
+    uint voxels[];
+};
 
 layout(binding = 6) buffer Materials {
-    Material data[];
-} mat;
+    Material materials[];
+};
 
 layout(binding = 7) buffer PointLights {
     PointLight data[];
@@ -67,15 +67,15 @@ layout(push_constant) uniform RenderPushConstantData {
     vec3 cam_f;
     float time;
     vec3 cam_u;
-    ivec3 vox_chunk_dim;
-    uint render_dist;
-} pc;
+    ivec3 vdim;
+    float render_dist;
+};
 
 ivec2 size = ivec2(0);
 
 vec4 blue_noise_sample(ivec2 uv) {
     // return texture(blue_noise, uv / vec2(size));
-    return texture(blue_noise, uv / vec2(size) + cos(33 * pc.time) * sin(50 * pc.time));
+    return texture(blue_noise, uv / vec2(size) + cos(33 * time) * sin(50 * time));
     // return imageLoad(blue_noise, uv);
     // return vec4(0);
 }
@@ -93,32 +93,11 @@ vec4 box_muller_transform(vec4 u) {
     return u;
 }
 
-uint get_voxel_mat(int x, int y, int z) {
-
-    uint bit_idx = x & 0x3;
-
-    int cx = x >> LOG2_CHUNK_DIM;
-    int cy = y >> LOG2_CHUNK_DIM;
-    int cz = z >> LOG2_CHUNK_DIM;
-
-    uint vx = x & CHUNK_DIM_MASK;
-    // uint vx = x & (CHUNK_DIM_MASK >> 2);
-    uint vy = y & CHUNK_DIM_MASK;
-    uint vz = z & CHUNK_DIM_MASK;
-
-    uint chunk_idx = cx + pc.vox_chunk_dim.x * (cy + pc.vox_chunk_dim.y * cz);
-    uint vox_idx = vx + CHUNK_DIM * (vy + CHUNK_DIM * vz);
-
-    // get the correct byte
-    // return (vox.chunks[chunk_idx].mat[vox_idx] >> (8 * bit_idx)) & 0xff;
-    return vox.chunks[chunk_idx].mat[vox_idx];
-}
-
 bool raymarch(vec3 o, vec3 d, out float t, out uint vox_mat, out uint incidence) {
 
-    uint max_x = CHUNK_DIM * pc.vox_chunk_dim.x;
-    uint max_y = CHUNK_DIM * pc.vox_chunk_dim.y;
-    uint max_z = CHUNK_DIM * pc.vox_chunk_dim.z;
+    uint max_x = vdim.x;
+    uint max_y = vdim.y;
+    uint max_z = vdim.z;
 
     
     if (o.y < 0 && d.y > 0) {
@@ -133,17 +112,23 @@ bool raymarch(vec3 o, vec3 d, out float t, out uint vox_mat, out uint incidence)
     t = 0;
 
     float mx, my, mz, dx, dy, dz, dsx, dsy, dsz, ox, oy, oz;
-    int sx, sy, sz, hsx, hsy, hsz, x, y, z;
+    int sx, sy, sz, hsx, hsy, hsz, x, y, z, ix, iy, iz;
     
     // setup calculations for stepping
     sx = int(sign(d.x));
     sy = int(sign(d.y));
     sz = int(sign(d.z));
     
+    ix = sx;
+    iy = sy * vdim.x;
+    iz = sz * vdim.x * vdim.y;
+    
     x = int(floor(o.x));
     y = int(floor(o.y));
     z = int(floor(o.z));
     
+    // 1.0/0.0 == INF in GLSL float implementation, which is convenient for
+    // this application
     dx = 1.0 / abs(d.x);
     dy = 1.0 / abs(d.y);
     dz = 1.0 / abs(d.z);
@@ -156,33 +141,42 @@ bool raymarch(vec3 o, vec3 d, out float t, out uint vox_mat, out uint incidence)
     my = abs(y + hsy - o.y) * dy;
     mz = abs(z + hsz - o.z) * dz;
     
-    // max 
-    uint n = pc.render_dist;
+    //calculate the voxel index of the original 
+    uint vox_idx = x + vdim.x * (y + vdim.y * z);
 
     vec3 color = vec3(0.0);
     
-    while (n != 0) {
+    while (t < render_dist) {
         
+        // find the next plane the ray will intersect with. then, increment 
+        // the coordinate perpendicular to that plane and change the voxel
+        // index accordingly. Also update the length of the ray so far, the
+        // last plane orientation crossed, and the axis trackers
+
         if (mx < my) {
             if (mx < mz) {
                 x += sx;
+                vox_idx += ix;
                 t = mx;
                 incidence = INCIDENCE_X;
                 mx += dx;
             } else {
                 z += sz;
+                vox_idx += iz;
                 t = mz;
                 incidence = INCIDENCE_Z;
                 mz += dz;
             }
-            } else {
+        } else {
             if (my < mz) {
                 y += sy;
+                vox_idx += iy;
                 t = my;
                 incidence = INCIDENCE_Y;
                 my += dy;
             } else {
                 z += sz;
+                vox_idx += iz;
                 t = mz;
                 incidence = INCIDENCE_Z;
                 mz += dz;
@@ -191,33 +185,52 @@ bool raymarch(vec3 o, vec3 d, out float t, out uint vox_mat, out uint incidence)
 
         // test if ray is out of bounds of the voxel data in x or z, wrap around.
         // wrap is used so that new voxel chunks can be streamed in without moving existing chunks
-        if (x < 0) {x = int(max_x - 1);}
-        if (x >= max_x) {x = 0;}
-        if (z < 0) {z = int(max_z - 1);}
-        if (z >= max_z) {z = 0;}
+        if (x < 0) {
+            x = int(max_x - 1);
+            vox_idx += max_x;
+        }
+        if (x >= max_x) {
+            x = 0;
+            vox_idx -= max_x;
+        }
+        if (z < 0) {
+            z = int(max_z - 1);
+            vox_idx += max_x * max_y * max_z;
+        }
+        if (z >= max_z) {
+            z = 0;
+            vox_idx -= max_x * max_y * max_z;
+        }
 
         // going out of bounds in the y axis means the ray goes to the skybox
-        if (y < 0 || max_y <= y) {
-            return false;
-        }
+        // if (x < 0 || max_x <= x) { return false; }
+        if (y < 0 || max_y <= y) { return false; }
+        // if (z < 0 || max_z <= z) { return false; }
 
-        // check solidity of voxel
-        vox_mat = get_voxel_mat(x,y,z);
+        // get the material data for the current voxel. GLSL primitives are min 4 bytes, but we
+        // don't need 2 billion materials, so we divide each uint into VOXELS_PER_UINT voxels.
+
+        // this is the uint containing VOXELS_PER_UINT voxels
+        vox_mat = voxels[vox_idx / VOXELS_PER_UINT];
+
+        // this is the index of the voxel within the uint
+        uint bit_idx = vox_idx & (VOXELS_PER_UINT - 1);
+
+        // we use this to extract the correct voxel material data
+        vox_mat = (vox_mat >> (BITS_PER_VOXEL * bit_idx)) & VOXEL_MAT_MASK;
 
         // check if voxel is solid
-        if ((mat.data[vox_mat].flags & FLAG_SOLID) != 0) {
+        if ((materials[vox_mat].flags & FLAG_SOLID) != 0) {
             return true;
         }
-
-        n -= 1;
     }
 
     return false;
 }
 
 vec3 oren_nayar(vec3 n, vec3 dr, vec3 di, vec3 e0, uint m) {
-    vec3 albedo = mat.data[m].albedo;
-    float v = mat.data[m].roughness;
+    vec3 albedo = materials[m].albedo;
+    float v = materials[m].roughness;
     float vv = v * v;
 
     dr = normalize(dr);
@@ -260,8 +273,8 @@ void main() {
 
     if (idx.x < size.x && idx.y < size.y) {
         // calculate ray for this pixel by constructing a virtual screen
-        vec3 vx = normalize(cross(pc.cam_f, pc.cam_u));
-        vec3 vy = normalize(cross(pc.cam_f, vx));
+        vec3 vx = normalize(cross(cam_f, cam_u));
+        vec3 vy = normalize(cross(cam_f, vx));
 
         vec2 screen_coord = vec2(idx) / vec2(size);
 
@@ -269,13 +282,13 @@ void main() {
         float cy = screen_coord.y - 0.5;
 
         // the ray direction for this pixel
-        vec3 d = pc.cam_f + cx * vx + cy * vy;
+        vec3 d = cam_f + cx * vx + cy * vy;
 
-        float size_x = float(CHUNK_DIM * pc.vox_chunk_dim.x);
-        float size_y = float(CHUNK_DIM * pc.vox_chunk_dim.y);
-        float size_z = float(CHUNK_DIM * pc.vox_chunk_dim.z);
+        float size_x = float(vdim.x);
+        float size_y = float(vdim.y);
+        float size_z = float(vdim.z);
 
-        vec3 o = pc.cam_o;
+        vec3 o = cam_o;
 
         float depth = 0.0;
 

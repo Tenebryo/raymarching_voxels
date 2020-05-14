@@ -40,6 +40,5 @@ pub use denoise_cs::ty::DenoisePushConstantData;
 pub use reproject_cs::ty::ReprojectPushConstantData;
 
 // Graphics Primitive Types
-pub use render_cs::ty::VoxelChunk;
 pub use render_cs::ty::Material;
 pub use render_cs::ty::PointLight;

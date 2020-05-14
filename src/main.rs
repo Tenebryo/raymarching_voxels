@@ -47,6 +47,8 @@ use crossterm::{
 
 use opensimplex::OsnContext;
 
+const BITS_PER_VOXEL : i32 = 16;
+const VOXELS_PER_U32 : i32 = 32 / BITS_PER_VOXEL;
 
 const BUFFER_FORMAT : Format = Format::R32G32B32A32Sfloat;
 
@@ -100,8 +102,14 @@ fn main() {
         // raytracing shader
         use shaders::render_cs;
 
+        use shaders::render_cs::SpecializationConstants;
+
+        let spec_const = SpecializationConstants {
+            BITS_PER_VOXEL
+        };
+
         let shader = render_cs::Shader::load(device.clone()).unwrap();
-        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
+        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_const).unwrap()
     });
 
     // build update compute pipeline
@@ -237,8 +245,8 @@ fn main() {
         cam_o : [0.0, 0.0, 0.0],
         cam_f : [0.0, 0.0, 1.0],
         cam_u : [0.0, 1.0, 0.0],
-        vox_chunk_dim : [8, 8, 4],
-        render_dist : 1024,
+        vdim : [256, 256, 128],
+        render_dist : 1064.0,
         time : p_start.elapsed().as_secs_f32(),
 
         // dummy variables for alignment
@@ -247,8 +255,8 @@ fn main() {
     };
 
     let denoise_pc = shaders::DenoisePushConstantData {
-        c_phi : 4.0,
-        n_phi : 0.2,
+        c_phi : 0.05,
+        n_phi : 64.0,
         p_phi : 1.0,
         step_width : 1,
     };
@@ -271,10 +279,10 @@ fn main() {
     // build the voxel data buffer
     let voxel_data_buffer = unsafe {
 
-        let num_chunks = render_pc.vox_chunk_dim[0] * render_pc.vox_chunk_dim[1] * render_pc.vox_chunk_dim[2];
+        let num_voxels = render_pc.vdim[0] * render_pc.vdim[1] * render_pc.vdim[2];
 
         // CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, data_iter).unwrap()
-        CpuAccessibleBuffer::<[shaders::VoxelChunk]>::uninitialized_array(device.clone(), num_chunks as usize, BufferUsage::all(), false).unwrap()
+        CpuAccessibleBuffer::<[u32]>::uninitialized_array(device.clone(), num_voxels as usize, BufferUsage::all(), false).unwrap()
     };
 
     println!("Voxel Buffer initialized");
@@ -289,41 +297,40 @@ fn main() {
 
         let mut index = [0,0,0];
 
-        for chunk in lock.iter_mut() {
+        for uint in lock.iter_mut() {
 
-            let mut chunk_data : Vec<u32> = Vec::with_capacity(64*64*64);
-            for z in 0..64 {
-                for y in 0..64 {
-                    for x in 0..64 {
+            let mut data = 0;
 
-                        let xn = (x + index[0] * 64) as f64;
-                        let yn = (y + index[1] * 64) as f64;
-                        let zn = (z + index[2] * 64) as f64;
+            // for each uint in the buffer, there are VOXELS_PER_U32, so we have to
+            // generate multiple voxels per uint.
+            for i in 0..VOXELS_PER_U32 {
 
-                        let noise_scale = 64.0;
+                let xn = index[0] as f64;
+                let yn = index[1] as f64;
+                let zn = index[2] as f64;
 
-                        let nx = ctx.noise3(xn / noise_scale, yn / noise_scale, zn / noise_scale);
+                let noise_scale = 64.0;
 
-                        // let nx = ns.sample(xn / noise_scale, yn / noise_scale, zn / noise_scale);
+                let nx = ctx.noise3(xn / noise_scale, yn / noise_scale, zn / noise_scale);
 
-                        chunk_data.push(if nx > 0.0 {1} else {0});
+                // let nx = ns.sample(xn / noise_scale, yn / noise_scale, zn / noise_scale);
+
+                if nx > 0.0 {
+                    data |= 1 << (BITS_PER_VOXEL * i);
+                }
+
+                index[0] += 1;
+                if index[0] == render_pc.vdim[0] {
+                    index[0] = 0;
+                    index[1] += 1;
+                    if index[1] == render_pc.vdim[1] {
+                        index[1] = 0;
+                        index[2] += 1;
                     }
                 }
             }
-    
-            // let chunk_data = chunk_data.chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect::<Vec<_>>();
 
-            chunk.mat.copy_from_slice(&chunk_data);
-
-            index[0] += 1;
-            if index[0] == render_pc.vox_chunk_dim[0] {
-                index[0] = 0;
-                index[1] += 1;
-                if index[1] == render_pc.vox_chunk_dim[1] {
-                    index[1] = 0;
-                    index[2] += 1;
-                }
-            }
+            *uint = data;
         }
     }
 

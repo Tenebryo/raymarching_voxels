@@ -22,17 +22,17 @@ void main() {
         float weight = 0;
         float power = 1.0;
         float decay = 1.0;
-        for (int i = 0; i < NUM_BUFFERS; i++) {
-            vec4 img_color = imageLoad(images[i], idx);
+        // for (int i = 0; i < NUM_BUFFERS; i++) {
+        //     vec4 img_color = imageLoad(images[i], idx);
             
-            float w = power * img_color.a;
-            color += w * img_color.rgb;
-            weight += w;
-            power *= decay;
-        }
-        color /= weight;
+        //     float w = power * img_color.a;
+        //     color += w * img_color.rgb;
+        //     weight += w;
+        //     power *= decay;
+        // }
+        // color /= weight;
 
-        imageStore(image, idx, vec4(color, 1.0));
-        // imageStore(image, idx, imageLoad(images[1], idx));
+        // imageStore(image, idx, vec4(color, 1.0));
+        imageStore(image, idx, imageLoad(images[0], idx));
     }
 }
