@@ -1,0 +1,15 @@
+#version 450
+///functions that compute a single sample of the lighting function for a pixel
+
+/// compute the direct lighting function
+void direct_lighting(vec3 cam, vec3 pos, vec3 nrm) {
+
+}
+
+void indirect_lighting() {
+
+}
+
+void main() {
+
+}

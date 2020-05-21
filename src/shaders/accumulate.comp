@@ -3,8 +3,11 @@
 #define NUM_BUFFERS 8
 
 layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
-layout(rgba32f, binding = 0) uniform image2D image;
-layout(rgba32f, binding = 1) uniform image2D images[NUM_BUFFERS];
+layout(rgba32f, binding = 0) uniform image2D new_image;
+layout(rgba32f, binding = 1) uniform image2D buffer_image;
+layout(r32f, binding = 2) uniform image2D alpha_image;
+
+
 
 
 // this shader accumulates previous images
@@ -15,24 +18,17 @@ void main() {
         gl_GlobalInvocationID.y
     );
 
-    ivec2 size = imageSize(image);
+    ivec2 size = imageSize(new_image);
 
     if (idx.x < size.x && idx.y < size.y) {
-        vec3 color = vec3(0);
-        float weight = 0;
-        float power = 1.0;
-        float decay = 1.0;
-        // for (int i = 0; i < NUM_BUFFERS; i++) {
-        //     vec4 img_color = imageLoad(images[i], idx);
-            
-        //     float w = power * img_color.a;
-        //     color += w * img_color.rgb;
-        //     weight += w;
-        //     power *= decay;
-        // }
-        // color /= weight;
+            // load the pixels from the storage and 
+        vec4 new_color = imageLoad(new_image, idx);
+        vec4 buffer_color = imageLoad(buffer_image, idx);
 
-        // imageStore(image, idx, vec4(color, 1.0));
-        imageStore(image, idx, imageLoad(images[0], idx));
+        vec4 alpha = imageLoad(alpha_image, idx);
+
+        buffer_color = alpha * new_color + (1 - alpha) * buffer_color;
+
+        imageStore(buffer_image, idx, buffer_color);
     }
 }

@@ -1,11 +1,13 @@
 #version 450
 layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
-layout(rgba32f, binding = 0) uniform image2D cImage;
-layout(rgba32f, binding = 1) uniform image2D nImage;
-layout(rgba32f, binding = 2) uniform image2D pImage;
-layout(rgba32f, binding = 3) uniform image2D dImage;
-// layout(rgba32f, binding = 3) readonly uniform image2D blue_noise;
-layout(binding = 4) uniform sampler2D blue_noise;
+layout(rgba32f, binding = 4) uniform image2D ilImage; // indirect lighting color
+layout(rgba32f, binding = 5) uniform image2D dlImage; // direct lighting color
+layout(rgba32f, binding = 6) uniform image2D nImage;  // normal
+layout(rgba32f, binding = 7) uniform image2D pImage;  // world position
+layout(rgba32f, binding = 8) uniform image2D dImage;  // depth
+layout(r32ui, binding = 9) uniform uimage2D iImage;   // voxel index
+
+layout(binding = 3) uniform sampler2D blue_noise;
 
 // must be a power of 2
 layout(constant_id=0) const int BITS_PER_VOXEL = 16;
@@ -51,26 +53,27 @@ struct PointLight {
     float size;
 };
 
-layout(binding = 5) buffer VoxelData {
+layout(binding = 0) buffer VoxelData {
     uint voxels[];
 };
 
-layout(binding = 6) buffer Materials {
+layout(binding = 1) buffer Materials {
     Material materials[];
 };
 
-layout(binding = 7) buffer PointLights {
-    PointLight data[];
-} point_lights;
+layout(binding = 2) buffer PointLights {
+    PointLight point_lights[];
+};
 
 layout(push_constant) uniform RenderPushConstantData {
     vec3 cam_o;
-    vec3 cam_f;
     float time;
-    vec3 cam_u;
-    ivec3 vdim;
-    float render_dist;
+    vec3 cam_f;
     float gamma;
+    vec3 cam_u;
+    float render_dist;
+    ivec3 vdim;
+    uint n_point_lights;
 };
 
 ivec2 size = ivec2(0);
@@ -95,7 +98,7 @@ vec4 box_muller_transform(vec4 u) {
     return u;
 }
 
-bool raymarch(vec3 o, vec3 d, out float t, out uint vox_mat, out uint incidence) {
+bool raymarch(vec3 o, vec3 d, out float t, out uint vox_idx, out uint vox_mat, out uint incidence) {
 
     uint max_x = vdim.x;
     uint max_y = vdim.y;
@@ -139,7 +142,7 @@ bool raymarch(vec3 o, vec3 d, out float t, out uint vox_mat, out uint incidence)
     float mz = abs(z + (1 + sz) / 2 - o.z) * dz;
     
     //calculate the voxel index of the original 
-    uint vox_idx = x + vdim.x * (y + vdim.y * z);
+    vox_idx = x + vdim.x * (y + vdim.y * z);
 
     vec3 color = vec3(0.0);
     
@@ -201,7 +204,7 @@ bool raymarch(vec3 o, vec3 d, out float t, out uint vox_mat, out uint incidence)
 
         // going out of bounds in the y axis means the ray goes to the skybox
         // if (x < 0 || max_x <= x) { return false; }
-        if (y < 0 || max_y <= y) { return false; }
+        if (y < 0 || max_y <= y) { vox_idx = -1; return false; }
         // if (z < 0 || max_z <= z) { return false; }
 
         // get the material data for the current voxel. GLSL primitives are min 4 bytes, but we
@@ -210,7 +213,7 @@ bool raymarch(vec3 o, vec3 d, out float t, out uint vox_mat, out uint incidence)
         // this is the uint containing VOXELS_PER_UINT voxels
         vox_mat = voxels[vox_idx / VOXELS_PER_UINT];
 
-        // this is the index of the voxel within the uint
+        // this is the index of the voxel within the uint (we assume that VOXELS_PER_UNIT is a power of 2)
         uint bit_idx = vox_idx & (VOXELS_PER_UINT - 1);
 
         // we use this to extract the correct voxel material data
@@ -221,7 +224,9 @@ bool raymarch(vec3 o, vec3 d, out float t, out uint vox_mat, out uint incidence)
             return true;
         }
     }
-
+    
+    vox_idx = -1; 
+    
     return false;
 }
 
@@ -299,20 +304,21 @@ void main() {
         gl_GlobalInvocationID.y
     );
 
-    size = imageSize(cImage);
+    size = imageSize(ilImage);
+
+    float aspect_ratio = float(size.x) / float(size.y);
 
     if (idx.x < size.x && idx.y < size.y) {
         // calculate ray for this pixel by constructing a virtual screen
         vec3 vx = normalize(cross(cam_f, cam_u));
         vec3 vy = normalize(cross(cam_f, vx));
 
-        vec2 screen_coord = vec2(idx) / vec2(size);
+        vec2 ndc = vec2(idx) / vec2(size);
 
-        float cx = screen_coord.x - 0.5;
-        float cy = screen_coord.y - 0.5;
+        vec2 ssc = 2 * (ndc - 0.5);
 
         // the ray direction for this pixel
-        vec3 d = cam_f + cx * vx + cy * vy;
+        vec3 d = cam_f + aspect_ratio * ssc.x * vx + ssc.y * vy;
 
         float ds[3] = {sign(d.x), sign(d.y), sign(d.z)};
 
@@ -334,50 +340,61 @@ void main() {
         }
 
         int i = 0;
-        vec3 color = vec3(0.0);
+        vec3 indirect_color = vec3(0.0);
+        vec3 direct_color = vec3(0.0);
         vec3 normal = vec3(0.0);
         vec3 position = vec3(0.0);
+        uint vox_idx = -1;
 
         vec3 ambient_light = vec3(0.2);
 
         if ((o.y < 0 && d.y < 0) || (o.y > size_y && d.y > 0)) {
-            color = vec3(0.5, 0.5, 1.0);
+            indirect_color = vec3(0.5, 0.5, 1.0);
         } else {
             uint vox_mat = 0;
             uint incidence = 0;
             float t = 0;
-            bool hit = raymarch(o, d, t, vox_mat, incidence);
+            bool hit = raymarch(o, d, t, vox_idx, vox_mat, incidence);
 
             depth += t;
 
+
             if (hit) {
-                normal = INCIDENCE_NORMALS[incidence];
+                // compute lighting of voxel collision
+                // deferred rendering is not needed since there can be no over-shading
+                indirect_color = vec3(0.0);
+                normal = -ds[incidence] * INCIDENCE_NORMALS[incidence];
                 position = o + (t - 1e-3) * d;
-                vec3 lp = point_lights.data[0].position + point_lights.data[0].size * box_muller_transform(blue_noise_sample(idx)).xyz;
 
-                vec3 ld = lp - position;
-                float l_dist = length(ld);
-                ld /= l_dist;
-                float lt = 0.0;
-                uint light_mat = 0;
-                uint light_incidence = 0;
-                bool occluded = raymarch(position, ld, lt, light_mat, light_incidence);
+                for (int i = 0; i < n_point_lights; i++) {
+                    vec3 lp = point_lights[i].position + point_lights[i].size * box_muller_transform(blue_noise_sample(idx)).xyz;
 
-                if (occluded) {
-                    color = ambient_light * CHEATY_NORMAL_COLORS[incidence];
-                } else {
-                    // color = INCIDENCE_NORMALS[incidence];
-                    color = blinn_phong(-ds[incidence] * INCIDENCE_NORMALS[incidence], position, cam_o, point_lights.data[0], materials[vox_mat]);
-                    
-                    // color = oren_nayar(n, -d, ld, point_lights.data[0].color, vox_mat);
+                    indirect_color += blinn_phong(normal, position, cam_o, point_lights[i], materials[vox_mat]);
+
+                    vec3 ld = lp - position;
+                    float l_dist = length(ld);
+                    ld /= l_dist;
+                    float lt = 0.0;
+                    uint light_idx = 0;
+                    uint light_mat = 0;
+                    uint light_incidence = 0;
+                    bool occluded = raymarch(position, ld, lt, light_idx, light_mat, light_incidence);
+
+                    if (!occluded) {
+                        direct_color += point_lights[i].color * point_lights[i].intensity / (l_dist * l_dist);
+                    }
                 }
             } else {
-                color = vec3(0.5, 0.5, 1.0);
+                // skybox color
+                indirect_color = vec3(0.5, 0.5, 1.0);
             }
         }
-        imageStore(cImage, idx, vec4(color, 1.0));
+
+        imageStore(ilImage, idx, vec4(indirect_color, 1.0));
+        imageStore(dlImage, idx, vec4(direct_color, 1.0));
         imageStore(nImage, idx, vec4(normal, 1.0));
         imageStore(pImage, idx, vec4(position, 1.0));
         imageStore(dImage, idx, vec4(depth));
+        imageStore(iImage, idx, uvec4(vox_idx));
     }
 }

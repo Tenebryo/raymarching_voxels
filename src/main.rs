@@ -3,19 +3,22 @@
 mod timing;
 mod shaders;
 mod noise;
-// mod vox;
+mod gbuffer;
+mod vox;
 
 use timing::Timing;
+use gbuffer::GBuffer;
 
 use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer};
-use vulkano::command_buffer::{AutoCommandBufferBuilder, DynamicState};
+use vulkano::command_buffer::{AutoCommandBufferBuilder, DynamicState, sys::{UnsafeCommandBufferBuilder, Kind, Flags}, pool::StandardCommandPool};
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use vulkano::descriptor::PipelineLayoutAbstract;
 use vulkano::device::{Device, DeviceExtensions};
 use vulkano::instance::{Instance, PhysicalDevice, QueueFamily};
 use vulkano::pipeline::ComputePipeline;
-use vulkano::sync::{GpuFuture, FlushError};
+use vulkano::sync::{GpuFuture, FlushError, PipelineStages};
 use vulkano::sync;
+use vulkano::query::{QueryType, UnsafeQueryPool, UnsafeQuery};
 
 use vulkano::image::{SwapchainImage, StorageImage, ImmutableImage, Dimensions};
 use vulkano::sampler::{Sampler, SamplerAddressMode, Filter, MipmapMode};
@@ -71,6 +74,7 @@ fn main() {
     let event_loop = EventLoop::new();
     let surface = WindowBuilder::new()
         .with_title("Voxel Renderer")
+        .with_maximized(true)
         .build_vk_surface(&event_loop, instance.clone()).unwrap();
 
     let compute_queue_family = physical.queue_families().find(|&q| q.supports_compute()).unwrap();
@@ -98,7 +102,7 @@ fn main() {
     //*************************************************************************************************************************************
 
     // build rendering compute pipeline
-    let render_compute_pipeline = Arc::new({
+    let _render_compute_pipeline = Arc::new({
         // raytracing shader
         use shaders::render_cs;
 
@@ -122,7 +126,7 @@ fn main() {
     });
 
     // build denoise compute pipeline
-    let denoise_compute_pipeline = Arc::new({
+    let _denoise_compute_pipeline = Arc::new({
         // raytracing shader
         use shaders::denoise_cs;
 
@@ -131,7 +135,7 @@ fn main() {
     });
 
     // build denoise compute pipeline
-    let reproject_compute_pipeline = Arc::new({
+    let _reproject_compute_pipeline = Arc::new({
         // raytracing shader
         use shaders::reproject_cs;
 
@@ -140,7 +144,7 @@ fn main() {
     });
 
     // build denoise compute pipeline
-    let accumulate_compute_pipeline = Arc::new({
+    let _accumulate_compute_pipeline = Arc::new({
         // raytracing shader
         use shaders::accumulate_cs;
 
@@ -148,7 +152,20 @@ fn main() {
         ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
     });
 
+    // build denoise compute pipeline
+    let intersect_compute_pipeline = Arc::new({
+        // raytracing shader
+        use shaders::intersect_cs;
+
+        let shader = intersect_cs::Shader::load(device.clone()).unwrap();
+        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
+    });
+
     println!("Render Pipeline initialized");
+
+    let timestamp_query_pool = Arc::new(UnsafeQueryPool::new(device.clone(), QueryType::Timestamp, 16).unwrap());
+
+    let timestamp_command_pool = Arc::new(StandardCommandPool::new(device.clone(), compute_queue.family()));
 
     
     //*************************************************************************************************************************************
@@ -176,7 +193,8 @@ fn main() {
 
 
     let [width, height]: [u32; 2] = surface.window().inner_size().into();
-    let (mut image_buffers, mut depth_buffers, mut tmp_images, mut screen_normals, mut screen_positions) = rebuild_intermediate_images(device.clone(), compute_queue_family.clone(), width, height);
+    let mut gbuffer = GBuffer::new_buffers(device.clone(), compute_queue_family.clone(), width, height, 2);
+    let mut prev_gbuffer = GBuffer::new_buffers(device.clone(), compute_queue_family.clone(), width, height, 0);
 
     println!("Storage Images initialized");
     
@@ -185,23 +203,97 @@ fn main() {
     // Constant Data
     //*************************************************************************************************************************************
 
-    let lin_sampler = Sampler::new(device.clone(), Filter::Linear, Filter::Linear,
+    let _lin_sampler = Sampler::new(device.clone(), Filter::Linear, Filter::Linear,
         MipmapMode::Linear, SamplerAddressMode::Repeat, SamplerAddressMode::Repeat,
         SamplerAddressMode::Repeat, 0.0, 1.0, 0.0, 0.0).unwrap();
 
-    let nst_sampler = Sampler::new(device.clone(), Filter::Nearest, Filter::Nearest,
+    let _nst_sampler = Sampler::new(device.clone(), Filter::Nearest, Filter::Nearest,
         MipmapMode::Nearest, SamplerAddressMode::Repeat, SamplerAddressMode::Repeat,
         SamplerAddressMode::Repeat, 0.0, 1.0, 0.0, 0.0).unwrap();
 
-    let (blue_noise_tex, load_future) = {
-        let png_bytes = include_bytes!("../data/LDR_RGBA_0.png").to_vec();
-        let cursor = Cursor::new(png_bytes);
-        let decoder = png::Decoder::new(cursor);
-        let (info, mut reader) = decoder.read_info().unwrap();
-        let dimensions = Dimensions::Dim2d { width: info.width, height: info.height };
+    let (_blue_noise_tex, load_future) = {
+        let png_bytes = [
+            include_bytes!("../data/blue_noise/HDR_RGBA_0.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_1.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_2.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_3.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_4.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_5.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_6.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_7.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_8.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_9.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_10.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_11.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_12.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_13.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_14.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_15.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_16.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_17.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_18.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_19.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_20.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_21.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_22.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_23.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_24.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_25.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_26.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_27.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_28.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_29.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_30.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_31.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_32.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_33.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_34.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_35.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_36.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_37.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_38.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_39.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_40.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_41.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_42.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_43.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_44.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_45.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_46.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_47.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_48.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_49.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_50.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_51.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_52.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_53.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_54.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_55.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_56.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_57.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_58.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_59.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_60.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_61.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_62.png").to_vec(),
+            include_bytes!("../data/blue_noise/HDR_RGBA_63.png").to_vec()
+        ];
+
         let mut image_data = Vec::new();
-        image_data.resize((info.width * info.height * 4) as usize, 0);
-        reader.next_frame(&mut image_data).unwrap();
+        image_data.resize((64 * 64 * 64 * 4) as usize, 0);
+        let dimensions = Dimensions::Dim3d { width: 64, height: 64, depth: png_bytes.len() as u32 };
+        for i in 0..64 {
+            let cursor = Cursor::new(png_bytes[i].clone());
+            let decoder = png::Decoder::new(cursor);
+            let (_info, mut reader) = decoder.read_info().unwrap();
+            // if let Dimensions::Dim3d{ref mut width, ref mut height, ..} = dimensions {
+            //     *width = info.width;
+            //     *height = info.height;
+            // }
+            reader.next_frame(&mut image_data[(64 * 64 * 4 * i)..(64 * 64 * 4 * (i+1))]).unwrap();
+        }
+
+        println!("{:?}", dimensions);
 
         ImmutableImage::from_iter(
             image_data.iter().cloned(),
@@ -233,9 +325,9 @@ fn main() {
 
     let mut input = WinitInputHelper::new();
 
-    let mut forward = Vector3::new(0.0, 0.0, 1.0);
+    let mut forward = Vector3::new(1.0, 1.0, 1.0).normalize();
     let up = Vector3::new(0.0, 1.0, 0.0);
-    let mut position = Vector3::new(0.0, 512.0, 0.0);
+    let mut position = 0.5f32 * Vector3::new(-1.0, -1.0, -1.0);
     let mut old_position = position;
     let mut input_time = Instant::now();
     let mut pitch = 0.0;
@@ -249,29 +341,39 @@ fn main() {
         render_dist : 1064.0,
         time : p_start.elapsed().as_secs_f32(),
         gamma : 1.0,
+        n_point_lights: 1,
 
         // dummy variables for alignment
-        _dummy0 : [0;4],
-        _dummy1 : [0;4],
+        // _dummy0 : [0;4],
+        // _dummy1 : [0;4],
     };
 
-    let denoise_pc = shaders::DenoisePushConstantData {
+    let _denoise_pc = shaders::DenoisePushConstantData {
         c_phi : 0.05,
         n_phi : 64.0,
         p_phi : 1.0,
         step_width : 1,
     };
 
-    let mut reproject_pc = shaders::ReprojectPushConstantData {
-        movement : [0.0; 3],
-        old_forward : [forward.x, forward.y, forward.z],
-        new_forward : [forward.x, forward.y, forward.z],
-        up : [up.x, up.y, up.z],
-        reproject_type : 0,
+    let mut intersect_pc = shaders::IntersectPushConstants {
+        camera_origin : [position.x, position.y, position.z],
+        camera_forward : [forward.x, forward.y, forward.z],
+        camera_up : [up.x, up.y, up.z],
 
-        _dummy0 : [0; 4],
-        _dummy1 : [0; 4],
+        _dummy0 : [0;4],
+        _dummy1 : [0;4],
     };
+
+    // let mut reproject_pc = shaders::ReprojectPushConstantData {
+    //     movement : [0.0; 3],
+    //     old_forward : [forward.x, forward.y, forward.z],
+    //     new_forward : [forward.x, forward.y, forward.z],
+    //     up : [up.x, up.y, up.z],
+    //     reproject_type : 0,
+
+    //     _dummy0 : [0; 4],
+    //     _dummy1 : [0; 4],
+    // };
     
     //*************************************************************************************************************************************
     // Voxel, Material, and Light Data Allocation and Generation
@@ -335,11 +437,37 @@ fn main() {
         }
     }
 
+    let svdag_geometry_data = {
+
+        let chunk_bytes = include_bytes!("../data/bunny.svdag");
+
+        bincode::deserialize::<vox::VoxelChunk>(chunk_bytes).expect("Deserialization Failed")
+    };
+
+    let svdag_geometry_buffer = {
+        CpuAccessibleBuffer::<[shaders::VChildDescriptor]>::from_iter(device.clone(), BufferUsage::all(), false, svdag_geometry_data.voxels.iter().cloned()).unwrap()
+    };
+
+    let svdag_material_buffer = {
+
+        let materials = [
+            // solid material
+            shaders::VMaterial{
+                color : [1.0; 3],
+                shininess : 1.0,
+                emission : [0.0; 3],
+                _dummy0 : [0;4],
+            },
+        ];
+
+        CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, materials.iter().cloned()).unwrap()
+    };
+
 
     println!("Voxel Data initialized");
 
     // create a list of materials to render
-    let material_data_buffer = {
+    let _material_data_buffer = {
         use shaders::Material;
 
         let materials = [
@@ -356,7 +484,7 @@ fn main() {
     println!("Material Data initialized");
 
     // create a list of materials to render
-    let point_light_data_buffer = {
+    let _point_light_data_buffer = {
         use shaders::PointLight;
 
         let lights = [
@@ -377,6 +505,11 @@ fn main() {
     //*************************************************************************************************************************************
     
     println!("Light Data initialized");
+
+    println!("");
+    println!("");
+    println!("");
+    println!("");
 
     event_loop.run(move |event, _, control_flow| {
 
@@ -414,14 +547,9 @@ fn main() {
                     update_dynamic_state(&swapchain_images, &mut dynamic_state);
 
                     // re-allocate buffer images
-                    let (new_image_buffers, new_depth_buffers, new_tmp_images, new_screen_normals, new_screen_positions) = 
-                        rebuild_intermediate_images(device.clone(), compute_queue.family(), surface_width, surface_height);
 
-                    image_buffers = new_image_buffers;
-                    depth_buffers = new_depth_buffers;
-                    tmp_images = new_tmp_images;
-                    screen_normals = new_screen_normals;
-                    screen_positions = new_screen_positions;
+                    gbuffer = GBuffer::new_buffers(device.clone(), compute_queue.family(), surface_width, surface_height, 2);
+                    prev_gbuffer = GBuffer::new_buffers(device.clone(), compute_queue.family(), surface_width, surface_height, 2);
 
                     recreate_swapchain = false;
                 }
@@ -442,123 +570,50 @@ fn main() {
                 }
 
                 render_pc.time = p_start.elapsed().as_secs_f32();
-                reproject_pc.new_forward = [forward.x, forward.y, forward.z];
-                reproject_pc.movement = [position.x - old_position.x, position.y - old_position.y, position.z - old_position.z];
+                // reproject_pc.new_forward = [forward.x, forward.y, forward.z];
+                
+                intersect_pc.camera_forward = [forward.x, forward.y, forward.z];
+                intersect_pc.camera_origin = [position.x, position.y, position.z];
+                intersect_pc.camera_up = [up.x, up.y, up.z];
+                // reproject_pc.movement = [position.x - old_position.x, position.y - old_position.y, position.z - old_position.z];
                 old_position = position;
 
-                // TODO: maybe cache DescriptorSets and modify them rather than construct them over and over
-                // would need to rebuild them whenever the window is resized, since the referenced buffers are remade
-                let render_layout = render_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
-                let render_set = Arc::new(PersistentDescriptorSet::start(render_layout.clone())
-                    // .add_image(images[image_num].clone()).unwrap()
-                    .add_image(image_buffers[0].clone()).unwrap()
-                    .add_image(screen_normals.clone()).unwrap()
-                    .add_image(screen_positions.clone()).unwrap()
-                    .add_image(depth_buffers[0].clone()).unwrap()
-                    // .add_image(blue_noise_tex.clone()).unwrap()
-                    .add_sampled_image(blue_noise_tex.clone(), nst_sampler.clone()).unwrap()
-                    .add_buffer(voxel_data_buffer.clone()).unwrap()
-                    .add_buffer(material_data_buffer.clone()).unwrap()
-                    .add_buffer(point_light_data_buffer.clone()).unwrap()
-                    .build().unwrap()
-                );
-
-                let accumulate_layout = accumulate_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
-                let accumulate_set = Arc::new(PersistentDescriptorSet::start(accumulate_layout.clone())
-                        .add_image(tmp_images[0].clone()).unwrap()
-                        // TODO: make the buffer size dynamic
-                        .enter_array().unwrap()
-                            .add_image(image_buffers[0].clone()).unwrap()
-                            .add_image(image_buffers[1].clone()).unwrap()
-                            .add_image(image_buffers[2].clone()).unwrap()
-                            .add_image(image_buffers[3].clone()).unwrap()
-                            .add_image(image_buffers[4].clone()).unwrap()
-                            .add_image(image_buffers[5].clone()).unwrap()
-                            .add_image(image_buffers[6].clone()).unwrap()
-                            .add_image(image_buffers[7].clone()).unwrap()
-                        .leave_array().unwrap()
-                        .build().unwrap()
-                );
-                
-                let denoise_layout = denoise_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
-                // descriptor set for denoising iteration reading tmp_images[0] and writing tmp_images[1]
-                let denoise_set_01 = Arc::new(PersistentDescriptorSet::start(denoise_layout.clone())
-                    .add_image(tmp_images[0].clone()).unwrap()
-                    .add_image(screen_normals.clone()).unwrap()
-                    .add_image(screen_positions.clone()).unwrap()
-                    .add_image(tmp_images[1].clone()).unwrap()
-                    .build().unwrap()
-                );
-                // descriptor set for denoising iteration reading tmp_images[1] and writing tmp_images[0]
-                let denoise_set_10 = Arc::new(PersistentDescriptorSet::start(denoise_layout.clone())
-                    .add_image(tmp_images[1].clone()).unwrap()
-                    .add_image(screen_normals.clone()).unwrap()
-                    .add_image(screen_positions.clone()).unwrap()
-                    .add_image(tmp_images[0].clone()).unwrap()
-                    .build().unwrap()
-                );
-                // descriptor set for denoising iteration reading tmp_images[0] and writing to the next swapchain image
-                let denoise_set_end = Arc::new(PersistentDescriptorSet::start(denoise_layout.clone())
-                    .add_image(tmp_images[0].clone()).unwrap()
-                    .add_image(screen_normals.clone()).unwrap()
-                    .add_image(screen_positions.clone()).unwrap()
+                let intersect_layout = intersect_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
+                let intersect_set = Arc::new(PersistentDescriptorSet::start(intersect_layout.clone())
+                    // normal buffer
+                    .add_image(gbuffer.normal_buffer.clone()).unwrap()
+                    // position buffer
                     .add_image(swapchain_images[image_num].clone()).unwrap()
+                    // depth buffer
+                    .add_image(gbuffer.depth_buffer.clone()).unwrap()
+                    // voxel index buffer
+                    .add_image(gbuffer.index_buffer.clone()).unwrap()
+                    .add_buffer(svdag_geometry_buffer.clone()).unwrap()
+                    .add_buffer(svdag_material_buffer.clone()).unwrap()
                     .build().unwrap()
                 );
-
-                //
-                let reproject_layout = reproject_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
-                let reproject_sets = (0..(NUM_BUFFERS - 1)).rev().map(|i| (
-                        i,
-                        // in the reprojection stage, images first get
-                        Arc::new(PersistentDescriptorSet::start(reproject_layout.clone())
-                            .add_sampled_image(image_buffers[i].clone(), nst_sampler.clone()).unwrap()
-                            .add_sampled_image(depth_buffers[i].clone(), nst_sampler.clone()).unwrap()
-                            .add_image(tmp_images[0].clone()).unwrap()
-                            .add_image(tmp_images[1].clone()).unwrap()
-                            .build().unwrap()
-                        ),
-                        Arc::new(PersistentDescriptorSet::start(reproject_layout.clone())
-                            .add_sampled_image(tmp_images[0].clone(), nst_sampler.clone()).unwrap()
-                            .add_sampled_image(tmp_images[1].clone(), nst_sampler.clone()).unwrap()
-                            .add_image(image_buffers[i + 1].clone()).unwrap()
-                            .add_image(depth_buffers[i + 1].clone()).unwrap()
-                            .build().unwrap()
-                        )
-                    ))
-                    .collect::<Vec<_>>();
-
-                use shaders::DenoisePushConstantData;
-                use shaders::ReprojectPushConstantData;
 
                 // we build a command buffer for this frame
                 // needs to be built each frame because we don't know which swapchain image we will be told to render to
                 // its possible a command buffer could be built for each swapchain ahead of time, but that would add complexity
-                let mut raymarch_command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap();
-
-                // reproject old frames
-                for (i, rproj_pos_set, rproj_rot_set) in reproject_sets {
-                    raymarch_command_buffer = raymarch_command_buffer
-                        .clear_color_image(image_buffers[i+1].clone(), ClearValue::Float([0.0; 4])).unwrap()
-                        .clear_color_image(depth_buffers[i+1].clone(), ClearValue::Float([1.0e6; 4])).unwrap()
-                        .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], reproject_compute_pipeline.clone(), rproj_pos_set.clone(), ReprojectPushConstantData{reproject_type: 1, ..reproject_pc}).unwrap()
-                        .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], reproject_compute_pipeline.clone(), rproj_rot_set.clone(), ReprojectPushConstantData{reproject_type: 0, ..reproject_pc}).unwrap()
-
-                }
+                let render_command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap();
 
                 // render
-                let raymarch_command_buffer = raymarch_command_buffer
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], render_compute_pipeline.clone(), render_set.clone(), render_pc).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], accumulate_compute_pipeline.clone(), accumulate_set.clone(), ()).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_01.clone(),  DenoisePushConstantData{step_width : 2, ..denoise_pc}).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_10.clone(),  DenoisePushConstantData{step_width : 1, ..denoise_pc}).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], denoise_compute_pipeline.clone(), denoise_set_end.clone(), DenoisePushConstantData{step_width : 1, ..denoise_pc}).unwrap()
+                let render_command_buffer = render_command_buffer
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
                     .build().unwrap();
 
                 let future = previous_frame_end.take().unwrap()
                     .join(acquire_future)
                     // rendering is done in a compute shader
-                    .then_execute(compute_queue.clone(), raymarch_command_buffer).unwrap()
+                    .then_execute(compute_queue.clone(), render_command_buffer).unwrap()
                     // present the frame when rendering is complete
                     .then_swapchain_present(compute_queue.clone(), swapchain.clone(), image_num)
                     .then_signal_fence_and_flush();
@@ -577,7 +632,7 @@ fn main() {
                     }
                 }
 
-                reproject_pc.old_forward = reproject_pc.new_forward;
+                // reproject_pc.old_forward = reproject_pc.new_forward;
 
                 // FPS information
                 fps.end_sample();
@@ -606,7 +661,7 @@ fn main() {
             let dt = input_time.elapsed().as_secs_f32();
             input_time = Instant::now();
 
-            let mut speed = 10.0;
+            let mut speed = 0.5;
 
             if input.key_held(VirtualKeyCode::W) {movement += forward;}
             if input.key_held(VirtualKeyCode::A) {movement += left;}
@@ -614,7 +669,8 @@ fn main() {
             if input.key_held(VirtualKeyCode::D) {movement -= left;}
             if input.key_held(VirtualKeyCode::Space) {movement += up;}
             if input.key_held(VirtualKeyCode::LShift) {movement -= up;}
-            if input.key_held(VirtualKeyCode::LControl) {speed = 100.0;}
+            if input.key_held(VirtualKeyCode::LControl) {speed = 2.0;}
+            if input.key_held(VirtualKeyCode::LAlt) {speed = 0.1;}
 
             // ensure that movement on the diagonals isn't faster
 
@@ -672,30 +728,3 @@ fn update_dynamic_state(
     dynamic_state.viewports = Some(vec!(viewport));
 }
 
-// When the window is resized, the various screen-shaped buffers need to be resized
-// this is done often and is a bit repetitive, so it is its own function
-fn rebuild_intermediate_images(
-    device : Arc<Device>, queue_family : QueueFamily, width : u32, height : u32
-) -> (
-    Vec<Arc<StorageImage<Format>>>,
-    Vec<Arc<StorageImage<Format>>>,
-    Vec<Arc<StorageImage<Format>>>,
-    Arc<StorageImage<Format>>,
-    Arc<StorageImage<Format>>
-) {
-    let image_buffers = (0..NUM_BUFFERS)
-            .map(|_| { StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap() })
-            .collect::<Vec<_>>();
-    let depth_buffers = (0..NUM_BUFFERS)
-            .map(|_| { StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Sfloat, [queue_family].iter().cloned()).unwrap() })
-            .collect::<Vec<_>>();
-
-    let tmp_images = (0..NUM_TEMP_IMAGES)
-            .map(|_| { StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap() })
-            .collect::<Vec<_>>();
-
-    let screen_normals = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap();
-    let screen_positions = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, BUFFER_FORMAT, [queue_family].iter().cloned()).unwrap();
-
-    (image_buffers, depth_buffers, tmp_images, screen_normals, screen_positions)
-}

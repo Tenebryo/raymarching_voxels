@@ -1,0 +1,8 @@
+#version 450
+
+struct GStruct {
+    vec3 pos;
+    uint voxel_idx;
+    vec3 normal;
+    uint seed;
+};

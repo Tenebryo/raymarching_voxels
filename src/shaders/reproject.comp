@@ -2,119 +2,55 @@
 layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 
 // color map in
-layout(binding = 0) uniform sampler2D cImage;
-// depth map in
-layout(binding = 1) uniform sampler2D dImage;
+layout(rgba32f, binding = 0) uniform image2D inBuffer;
+// world positions in
+layout(rgba32f, binding = 1) uniform image2D pBuffer;
 // color map out
-layout(rgba32f, binding = 2) uniform image2D ncImage;
-// depth map out
-layout(r32f, binding = 3) uniform image2D ndImage;
+layout(rgba32f, binding = 2) uniform image2D outBuffer;
+// we already know the world positions out (the positions from the current frame)
 
 layout(push_constant) uniform ReprojectPushConstantData {
-    vec3 movement;
-    uint reproject_type;
-    vec3 old_forward;
-    vec3 new_forward;
+    vec3 origin;
+    vec3 forward;
     vec3 up;
 };
 
-const uint REPROJECT_ROT = 0;
-const uint REPROJECT_POS = 1;
+void main() {
 
-// using the depth buffer, we shift pixels based on their distance and the linear movement of the camera
-void pos_reproject() {
-
-    ivec2 idx = ivec2(
-        gl_GlobalInvocationID.x,
-        gl_GlobalInvocationID.y
-    );
-
-    ivec2 size = imageSize(ncImage);
-
-    if (idx.x < size.x && idx.y < size.y) {
-        // calculate ray for this pixel by constructing a virtual screen
-        vec3 forward = normalize(old_forward);
-
-        vec2 uv = idx / vec2(size);
-
-        vec3 vx = normalize(cross(forward, up));
-        vec3 vy = normalize(cross(vx, forward));
-
-        // we calculate the displacement relative to the screen the image is from
-        vec3 displacement = vec3(
-            dot(movement, vx),
-            dot(movement, vy),
-            dot(movement, forward)
-        );
-
-        float new_depth = texture(dImage, uv).r + displacement.z;
-        vec4 color = texture(cImage, uv);
-
-        vec2 new_uv = uv - displacement.xy / new_depth;
-        
-        ivec2 new_idx = ivec2(round(size * new_uv));
-
-        if (0 <= new_idx.x && new_idx.x < size.x && 0 <= new_idx.y && new_idx.y < size.y) {
-            imageStore(ncImage, new_idx, color);
-            imageStore(ndImage, new_idx, vec4(new_depth));
-        }
-    }
-}
-
-// rotation reprojection is relatively simple, since we are assuming that rays from
-// the previous image are projected from the same origin.
-void rot_reproject() {
     
     ivec2 idx = ivec2(
         gl_GlobalInvocationID.x,
         gl_GlobalInvocationID.y
     );
 
-    ivec2 size = imageSize(ncImage);
+    ivec2 size = imageSize(outBuffer);
+
+    float aspect_ratio = float(size.x) / float(size.y);
 
     if (idx.x < size.x && idx.y < size.y) {
-        // calculate ray for this pixel by constructing a virtual screen
-        vec3 vx = normalize(cross(new_forward, up));
-        vec3 vy = normalize(cross(vx, new_forward));
+        // calculate the x- and y-axis of the new camera plane
+        vec3 sx = normalize(cross(forward, up));
+        vec3 sy = normalize(cross(forward, sx));
 
-        vec2 screen_coord = vec2(idx) / vec2(size);
+        // get the world position
+        vec3 wp = imageLoad(pBuffer, idx).xyz;
+        
+        // vector/ray from new camera origin to world position of intersection
+        vec3 v = wp - origin;
 
-        float cx = screen_coord.x - 0.5;
-        float cy = screen_coord.y - 0.5;
+        // check that the intersection is in front of the camera
+        float d = dot(forward, v);
 
-        // the ray direction for this pixel
-        vec3 d = new_forward + cx * vx + cy * vy;
+        // intersect v into the new camera plane.
+        v *= dot(forward, forward) / d;
 
-        d *= length(old_forward) / dot(d, old_forward);
+        // determine the new coordinates on the camera plane ([0, 1])
+        vec2 uv = vec2(dot(sx, v) / aspect_ratio, dot(sy, v)) * 0.5 + 0.5;
 
-        //calculate the corresponding pixel from the old image
-        vec3 ovx = normalize(cross(old_forward, up));
-        vec3 ovy = normalize(cross(ovx, old_forward));
+        // new screen coordinates
+        ivec2 nsc = ivec2(size * uv);
 
-        vec2 uv = vec2(dot(d, ovx), dot(d, ovy)) + 0.5;
-
-        if (0 <= uv.x && uv.x < 1.0 && 0 <= uv.y && uv.y < 1.0) {
-            //sample the old texture in the new direction if the ray is on the image
-            imageStore(ncImage, idx, texture(cImage, uv));
-            imageStore(ndImage, idx, texture(dImage, uv));
-        } else {
-            imageStore(ncImage, idx, vec4(0));
-            imageStore(ndImage, idx, vec4(0));
-        }
-    }
-}
-
-
-// 6-axis reprojection is achieved by separating the 6-axis movement of the camera between
-// frames into 3-axis movement and rotation components. Each is accomplished in one of the 
-// functions above. 
-void main() {
-    switch (reproject_type) {
-        case REPROJECT_ROT:
-            rot_reproject();
-            break;
-        case REPROJECT_POS:
-            pos_reproject();
-            break;
+        // store the previously rendered pixel in the new position
+        imageStore(outBuffer, nsc, imageLoad(inBuffer, idx));
     }
 }

@@ -1,0 +1,114 @@
+#version 450
+
+layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
+layout(rgba32f, binding = 0) uniform image2D nImage;  // normal
+layout(rgba32f, binding = 1) uniform image2D pImage;  // world position
+layout(r32f, binding = 2) uniform image2D dImage;  // depth
+layout(r32ui, binding = 3) uniform uimage2D iImage;   // voxel index
+
+#define VOXEL_BINDING_OFFSET 4
+#include "voxel.glsl"
+
+layout(push_constant) uniform IntersectPushConstants {
+    vec3 camera_origin;
+    vec3 camera_forward;
+    vec3 camera_up;
+};
+
+const vec3 colors[5] = {
+    vec3(0xDC / float(0xFF), 0xE0 / float(0xFF), 0xD9 / float(0xFF)),
+    vec3(0x31 / float(0xFF), 0x08 / float(0xFF), 0x1F / float(0xFF)),
+    vec3(0x6B / float(0xFF), 0x0F / float(0xFF), 0x1A / float(0xFF)),
+    vec3(0x59 / float(0xFF), 0x59 / float(0xFF), 0x59 / float(0xFF)),
+    vec3(0x80 / float(0xFF), 0x8F / float(0xFF), 0x85 / float(0xFF))
+};
+
+
+const vec3 colors8[8] = {
+    vec3(0.5, 0.0, 0.0), vec3(1.0, 0.0, 0.0),
+    vec3(0.0, 0.5, 0.0), vec3(0.0, 1.0, 0.0),
+    vec3(0.0, 0.0, 0.5), vec3(0.0, 0.0, 1.0),
+    vec3(0.5, 0.5, 0.0), vec3(1.0, 1.0, 0.0),
+};
+
+void main() {
+    ivec2 idx = ivec2(
+        gl_GlobalInvocationID.x,
+        gl_GlobalInvocationID.y
+    );
+
+    ivec2 size = imageSize(pImage);
+
+    float aspect_ratio = float(size.x) / float(size.y);
+
+    if (idx.x < size.x && idx.y < size.y) {
+        // calculate ray for this pixel by constructing a virtual screen
+        vec3 vx = normalize(cross(camera_forward, camera_up));
+        vec3 vy = normalize(cross(camera_forward, vx));
+
+        // ND coordinates [0,1]x[0,1]
+        vec2 ndc = vec2(idx) / vec2(size);
+
+        // (pseudo) screen space coordinates [-1,1]x[-1,1]
+        vec2 ssc = 2 * (ndc - 0.5);
+
+        // the ray direction for this pixel
+        vec3 ray_dir = normalize(camera_forward + aspect_ratio * ssc.x * vx + ssc.y * vy);
+
+        uint incidence = 0;
+        float dist = 0;
+
+        vec3 normals[3] = {
+            vec3(1,0,0),
+            vec3(0,1,0),
+            vec3(0,0,1)
+        };
+        uint vid = 0;
+        bool e;
+        bool hit = voxel_march(camera_origin, ray_dir, dist, incidence, vid, e);
+
+
+        if (hit) {
+            imageStore(nImage, idx, vec4(sign(ray_dir) * colors8[incidence],1.0));
+            imageStore(dImage, idx, vec4(dist));
+            // imageStore(pImage, idx, vec4(colors[int(mod(vid,5))], 1));
+            if (e) {
+                imageStore(pImage, idx,  vec4(colors8[incidence], 1));
+            } else {
+                imageStore(pImage, idx, vec4(vec3(dist), 1));
+            }
+            // imageStore(pImage, idx, vec4(camera_origin + ray_dir * dist, 1));
+        } else {
+            imageStore(nImage, idx, vec4(0.1));
+            imageStore(dImage, idx, vec4(0.1));
+            imageStore(pImage, idx, vec4(0.1));
+        }
+
+        // vec3 ds = sign(ray_dir);
+
+        // vec3 d = ray_dir * ds;
+        // vec3 o = camera_origin * ds;
+
+        // vec3 id = 1.0 / d;
+        // vec3 od = - o * id;
+
+        // uint i_min, i_max;
+
+
+        // vec2 t = project_cube(id, od, vec3(-1), vec3(1), i_min, i_max) / 5;
+
+        // t = interval_intersect(vec2(0,100), t);
+
+        // if (interval_nonempty(t)) {
+
+        //     imageStore(nImage, idx, vec4(sign(ray_dir) * normals[incidence],1.0));
+        //     imageStore(dImage, idx, vec4(t.x));
+        //     imageStore(pImage, idx, vec4(vec3(t.x), 1));
+        // } else {
+            
+        //     imageStore(nImage, idx, vec4(0.1));
+        //     imageStore(dImage, idx, vec4(0.1));
+        //     imageStore(pImage, idx, vec4(0.1));
+        // }
+    }
+}
