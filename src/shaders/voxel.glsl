@@ -10,21 +10,6 @@
 #endif
 
 
-struct Material {
-    vec3 albedo;
-    float transparency;
-    vec3 emission;
-    uint flags;
-    float roughness;
-    float shininess;
-};
-
-struct VMaterial {
-    vec3 color;
-    float shininess;
-    vec3 emission;
-};
-
 #define AXIS_X_MASK 1
 #define AXIS_Y_MASK 2
 #define AXIS_Z_MASK 4
@@ -47,9 +32,8 @@ layout(binding = VOXEL_BINDING_OFFSET) buffer VoxelChildData {
     VChildDescriptor voxels[];
 };
 layout(binding = VOXEL_BINDING_OFFSET + 1) buffer VoxelMaterialData {
-    VMaterial materials[];
+    uint voxels_material[];
 };
-
 
 vec2 project_cube(vec3 id, vec3 od, vec3 mn, vec3 mx, out uint incidence_min, out uint incidence_max) {
 
@@ -193,7 +177,13 @@ uint extract_child_slot(uvec3 pos, uint scale) {
     return idx;
 }
 
-bool voxel_march(vec3 o, vec3 d, out float dist, out uint incidence, out uint vid, out bool error) {
+#define VOXEL_MARCH_MISS 0
+#define VOXEL_MARCH_HIT 1
+#define VOXEL_MARCH_MAX_DEPTH 2
+#define VOXEL_MARCH_LOD 3
+#define VOXEL_MARCH_MAX_DIST 4
+
+bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist, out uint incidence, out uint vid, out uint return_state, out uint iterations) {
 
     const uint MAX_SCALE = (1<<MAX_DAG_DEPTH);
 
@@ -255,12 +245,13 @@ bool voxel_march(vec3 o, vec3 d, out float dist, out uint incidence, out uint vi
 
     scale >>= 1;
 
-    uint iterations = 0;
+    iterations = 0;
 
-    error = false;
+    return_state = VOXEL_MARCH_MISS;
 
     pstack[0] = parent;
     tstack[0] = t.y;
+
 
     while (iterations < 512) {
         iterations += 1;
@@ -269,11 +260,17 @@ bool voxel_march(vec3 o, vec3 d, out float dist, out uint incidence, out uint vi
 
         if (voxel_valid_bit(parent, dmask ^ idx) && interval_nonempty(t)) {
 
-            // TODO: dynamic LOD
-            if (scale <= 1) {
+            if (scale <= tc.x * 0.005 || depth >= max_depth) {
                 // voxel is too small
                 dist = t.x / MAX_SCALE;
+                return_state = depth >= max_depth ? VOXEL_MARCH_MAX_DEPTH : VOXEL_MARCH_LOD;
                 return true;
+            }
+
+            if (tc.x > max_dist * MAX_SCALE) {
+                // voxel is beyond the render distance
+                return_state = VOXEL_MARCH_MAX_DIST;
+                return false;
             }
 
             vec2 tv = interval_intersect(tc, t);
@@ -282,6 +279,7 @@ bool voxel_march(vec3 o, vec3 d, out float dist, out uint incidence, out uint vi
                 if (voxel_leaf_bit(parent, dmask ^ idx)) {
                     dist = tv.x / MAX_SCALE;
                     vid = (parent << 3) | (dmask ^ idx);
+                    return_state = VOXEL_MARCH_HIT;
                     return true;
                 }
                 // descend:
@@ -303,22 +301,40 @@ bool voxel_march(vec3 o, vec3 d, out float dist, out uint incidence, out uint vi
         }
 
         // advance
-        old_pos = pos;
+        t.x = tc.y;
 
-        pos += scale * incidence_axis[incidence];
-        uint mask = incidence_mask[incidence];
+        uint mask = 0;
+        uint bit_diff = 0;
+        if (incidence == INCIDENCE_X) {
+            uint px = pos.x;
+            pos.x += scale;
+            bit_diff = px ^ pos.x;
+            mask = AXIS_X_MASK;
+        } else if (incidence == INCIDENCE_Y) {
+            uint py = pos.y;
+            pos.y += scale;
+            bit_diff = py ^ pos.y;
+            mask = AXIS_Y_MASK;
+        } else {
+            uint pz = pos.z;
+            pos.z += scale;
+            bit_diff = pz ^ pos.z;
+            mask = AXIS_Z_MASK;
+        }
+
         idx ^= mask;
 
-        // advance to the end of the cube intersection
-        t.x = tc.y;
 
         // idx bits should only ever flip 0->1 because we force the ray direction to always be in the (1,1,1) quadrant
         if ((idx & mask) == 0) {
             // ascend
-            depth = highest_differing_bit(pos, old_pos);
+
+            // highest differing bit
+            depth = ilog2(bit_diff);
 
             // check if we exited voxel tree
             if (depth >= MAX_DAG_DEPTH) {
+                return_state = VOXEL_MARCH_MISS;
                 return false;
             }
 

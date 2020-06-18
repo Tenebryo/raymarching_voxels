@@ -1,18 +1,23 @@
 #version 450
 
 layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
-layout(rgba32f, binding = 0) uniform image2D nImage;  // normal
-layout(rgba32f, binding = 1) uniform image2D pImage;  // world position
-layout(r32f, binding = 2) uniform image2D dImage;  // depth
-layout(r32ui, binding = 3) uniform uimage2D iImage;   // voxel index
+layout(r32f, binding = 0) uniform image2D initialDepthImage;  // depth
+layout(rgba32f, binding = 1) uniform image2D nImage;  // normal
+layout(rgba32f, binding = 2) uniform image2D pImage;  // world position
+layout(r32f, binding = 3) uniform image2D dImage;  // depth
+layout(r32ui, binding = 4) uniform uimage2D mImage;   // voxel index
+layout(r32ui, binding = 5) uniform uimage2D sImage;   // random seed index
 
-#define VOXEL_BINDING_OFFSET 4
+#define VOXEL_BINDING_OFFSET 6
 #include "voxel.glsl"
 
 layout(push_constant) uniform IntersectPushConstants {
     vec3 camera_origin;
+    uint frame_idx;
     vec3 camera_forward;
+    uint max_depth;
     vec3 camera_up;
+    float render_dist;
 };
 
 const vec3 colors[5] = {
@@ -55,6 +60,21 @@ void main() {
         // the ray direction for this pixel
         vec3 ray_dir = normalize(camera_forward + aspect_ratio * ssc.x * vx + ssc.y * vy);
 
+        ivec2 pre_idx = size / 8;
+
+        float init_depth = min(
+            min(
+                imageLoad(initialDepthImage, pre_idx).x,
+                imageLoad(initialDepthImage, pre_idx + ivec2(1,0)).x
+            ),
+            min(
+                imageLoad(initialDepthImage, pre_idx + ivec2(0,1)).x,
+                imageLoad(initialDepthImage, pre_idx + ivec2(1,1)).x
+            )
+        );
+
+        init_depth = max(init_depth, 0);
+
         uint incidence = 0;
         float dist = 0;
 
@@ -64,20 +84,15 @@ void main() {
             vec3(0,0,1)
         };
         uint vid = 0;
-        bool e;
-        bool hit = voxel_march(camera_origin, ray_dir, dist, incidence, vid, e);
+        uint ret;
+        uint iter;
+        bool hit = voxel_march(camera_origin + ray_dir * init_depth, ray_dir, max_depth, render_dist, dist, incidence, vid, ret, iter);
 
 
         if (hit) {
             imageStore(nImage, idx, vec4(sign(ray_dir) * colors8[incidence],1.0));
             imageStore(dImage, idx, vec4(dist));
-            // imageStore(pImage, idx, vec4(colors[int(mod(vid,5))], 1));
-            if (e) {
-                imageStore(pImage, idx,  vec4(colors8[incidence], 1));
-            } else {
-                imageStore(pImage, idx, vec4(vec3(dist), 1));
-            }
-            // imageStore(pImage, idx, vec4(camera_origin + ray_dir * dist, 1));
+            imageStore(pImage, idx, vec4(vec3(iter / 64.0), 1));
         } else {
             imageStore(nImage, idx, vec4(0.1));
             imageStore(dImage, idx, vec4(0.1));

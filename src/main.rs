@@ -1,10 +1,13 @@
 #![allow(dead_code)]
 
+extern crate nalgebra as na;
+
 mod timing;
 mod shaders;
 mod noise;
 mod gbuffer;
 mod vox;
+mod brdf;
 
 use timing::Timing;
 use gbuffer::GBuffer;
@@ -158,6 +161,15 @@ fn main() {
         use shaders::intersect_cs;
 
         let shader = intersect_cs::Shader::load(device.clone()).unwrap();
+        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
+    });
+
+    // build denoise compute pipeline
+    let pre_trace_compute_pipeline = Arc::new({
+        // raytracing shader
+        use shaders::pre_trace_cs;
+
+        let shader = pre_trace_cs::Shader::load(device.clone()).unwrap();
         ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
     });
 
@@ -327,7 +339,7 @@ fn main() {
 
     let mut forward = Vector3::new(1.0, 1.0, 1.0).normalize();
     let up = Vector3::new(0.0, 1.0, 0.0);
-    let mut position = 0.5f32 * Vector3::new(-1.0, -1.0, -1.0);
+    let mut position = 0.1f32 * Vector3::new(-1.0, -1.0, -1.0);
     let mut old_position = position;
     let mut input_time = Instant::now();
     let mut pitch = 0.0;
@@ -359,9 +371,9 @@ fn main() {
         camera_origin : [position.x, position.y, position.z],
         camera_forward : [forward.x, forward.y, forward.z],
         camera_up : [up.x, up.y, up.z],
-
-        _dummy0 : [0;4],
-        _dummy1 : [0;4],
+        max_depth : 10,
+        render_dist: 100.0,
+        frame_idx : 0,
     };
 
     // let mut reproject_pc = shaders::ReprojectPushConstantData {
@@ -452,11 +464,14 @@ fn main() {
 
         let materials = [
             // solid material
-            shaders::VMaterial{
-                color : [1.0; 3],
+            shaders::Material{
+                albedo : [1.0; 3],
                 shininess : 1.0,
                 emission : [0.0; 3],
-                _dummy0 : [0;4],
+                roughness : 0.5,
+                transparency : 0.0,
+                flags : 0,
+                _dummy0 : [0; 8],
             },
         ];
 
@@ -580,6 +595,8 @@ fn main() {
 
                 let intersect_layout = intersect_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
                 let intersect_set = Arc::new(PersistentDescriptorSet::start(intersect_layout.clone())
+                    // initial depth buffer
+                    .add_image(gbuffer.pre_depth_buffer.clone()).unwrap()
                     // normal buffer
                     .add_image(gbuffer.normal_buffer.clone()).unwrap()
                     // position buffer
@@ -588,6 +605,27 @@ fn main() {
                     .add_image(gbuffer.depth_buffer.clone()).unwrap()
                     // voxel index buffer
                     .add_image(gbuffer.index_buffer.clone()).unwrap()
+                    // random seed buffer
+                    .add_image(gbuffer.seed_buffer.clone()).unwrap()
+                    .add_buffer(svdag_geometry_buffer.clone()).unwrap()
+                    .add_buffer(svdag_material_buffer.clone()).unwrap()
+                    .build().unwrap()
+                );
+
+                let pre_trace_pc = shaders::PreTracePushConstants {
+                    camera_forward : intersect_pc.camera_forward,
+                    camera_origin : intersect_pc.camera_origin,
+                    camera_up : intersect_pc.camera_up,
+                    max_depth : 4,
+
+                    _dummy0 : [0;4],
+                    _dummy1 : [0;4],
+                };
+
+                let pre_trace_layout = pre_trace_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
+                let pre_trace_set = Arc::new(PersistentDescriptorSet::start(pre_trace_layout.clone())
+                    // depth buffer
+                    .add_image(gbuffer.pre_depth_buffer.clone()).unwrap()
                     .add_buffer(svdag_geometry_buffer.clone()).unwrap()
                     .add_buffer(svdag_material_buffer.clone()).unwrap()
                     .build().unwrap()
@@ -600,6 +638,7 @@ fn main() {
 
                 // render
                 let render_command_buffer = render_command_buffer
+                    .dispatch([(gbuffer.pre_trace_width - 1) / 32 + 1, (gbuffer.pre_trace_height - 1) / 32 + 1, 1], pre_trace_compute_pipeline.clone(), pre_trace_set.clone(), pre_trace_pc).unwrap()
                     .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
                     .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
                     .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
@@ -701,6 +740,12 @@ fn main() {
                     forward = rot_y.rotate_vector(rot_p.rotate_vector(Vector3::unit_z()));
                     forward = forward.normalize();
                 }
+            }
+
+            if input.scroll_diff() < 0.0 && intersect_pc.max_depth > 0{
+                intersect_pc.max_depth -= 1;
+            } else if input.scroll_diff() > 0.0 && intersect_pc.max_depth < 15 {
+                intersect_pc.max_depth += 1;
             }
 
             render_pc.cam_o = [position.x, position.y, position.z];

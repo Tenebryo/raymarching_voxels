@@ -47,7 +47,7 @@ void main() {
         // determine the new coordinates on the camera plane ([0, 1])
         vec2 uv = vec2(dot(sx, v) / aspect_ratio, dot(sy, v)) * 0.5 + 0.5;
 
-        // new screen coordinates
+        // new screen coordinates (floored)
         ivec2 nsc = ivec2(size * uv);
 
         // store the previously rendered pixel in the new position

@@ -41,19 +41,33 @@ pub mod intersect_cs {
     }
 }
 
+pub mod pre_trace_cs {
+    vulkano_shaders::shader!{
+        ty: "compute",
+        path: "src/shaders/pre_trace.comp",
+        include: ["src/shaders/"],
+    }
+}
+
+pub mod lighting_cs {
+    vulkano_shaders::shader!{
+        ty: "compute",
+        path: "src/shaders/lighting.comp",
+        include: ["src/shaders/"],
+    }
+}
+
 // Push Constant Types
 pub use render_cs::ty::RenderPushConstantData;
 pub use update_cs::ty::UpdatePushConstantData;
 pub use denoise_cs::ty::DenoisePushConstantData;
 pub use reproject_cs::ty::ReprojectPushConstantData;
 pub use intersect_cs::ty::IntersectPushConstants;
+pub use pre_trace_cs::ty::PreTracePushConstants;
 
 // Graphics Primitive Types
 pub use render_cs::ty::Material;
 pub use render_cs::ty::PointLight;
-
-// Voxel Types
-pub use intersect_cs::ty::VMaterial;
 
 // these redefinition shenanigans are necessary because serde can't quite derive
 // serialize/deserialize for types in another module that are used in Vec fields
