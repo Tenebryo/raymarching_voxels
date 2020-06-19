@@ -36,6 +36,8 @@ const vec3 colors8[8] = {
     vec3(0.5, 0.5, 0.0), vec3(1.0, 1.0, 0.0),
 };
 
+const vec3 INCIDENCE_NORMAL_VECTORS[3] = {vec3(1,0,0), vec3(0,1,0), vec3(0,0,1)};
+
 void main() {
     ivec2 idx = ivec2(
         gl_GlobalInvocationID.x,
@@ -88,42 +90,22 @@ void main() {
         uint iter;
         bool hit = voxel_march(camera_origin + ray_dir * init_depth, ray_dir, max_depth, render_dist, dist, incidence, vid, ret, iter);
 
+        dist += init_depth;
+        vec3 p = camera_origin + ray_dir * dist;
+        vec3 n = INCIDENCE_NORMAL_VECTORS[incidence];
 
         if (hit) {
-            imageStore(nImage, idx, vec4(sign(ray_dir) * colors8[incidence],1.0));
+            imageStore(nImage, idx, vec4(n,1.0));
             imageStore(dImage, idx, vec4(dist));
-            imageStore(pImage, idx, vec4(vec3(iter / 64.0), 1));
+            imageStore(pImage, idx, vec4(p, 1));
+            imageStore(mImage, idx, uvec4(vid));
+            imageStore(sImage, idx, uvec4(frame_idx, mod(frame_idx * frame_idx + 761, 1000007), 0, 0));
         } else {
             imageStore(nImage, idx, vec4(0.1));
             imageStore(dImage, idx, vec4(0.1));
             imageStore(pImage, idx, vec4(0.1));
+            imageStore(mImage, idx, uvec4(0));
+            imageStore(sImage, idx, uvec4(0));
         }
-
-        // vec3 ds = sign(ray_dir);
-
-        // vec3 d = ray_dir * ds;
-        // vec3 o = camera_origin * ds;
-
-        // vec3 id = 1.0 / d;
-        // vec3 od = - o * id;
-
-        // uint i_min, i_max;
-
-
-        // vec2 t = project_cube(id, od, vec3(-1), vec3(1), i_min, i_max) / 5;
-
-        // t = interval_intersect(vec2(0,100), t);
-
-        // if (interval_nonempty(t)) {
-
-        //     imageStore(nImage, idx, vec4(sign(ray_dir) * normals[incidence],1.0));
-        //     imageStore(dImage, idx, vec4(t.x));
-        //     imageStore(pImage, idx, vec4(vec3(t.x), 1));
-        // } else {
-            
-        //     imageStore(nImage, idx, vec4(0.1));
-        //     imageStore(dImage, idx, vec4(0.1));
-        //     imageStore(pImage, idx, vec4(0.1));
-        // }
     }
 }
