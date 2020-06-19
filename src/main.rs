@@ -45,6 +45,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 use std::time::Instant;
 use std::io::stdout;
+use std::path::*;
 
 use crossterm::{
     ExecutableCommand,
@@ -170,6 +171,15 @@ fn main() {
         use shaders::pre_trace_cs;
 
         let shader = pre_trace_cs::Shader::load(device.clone()).unwrap();
+        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
+    });
+
+    // build denoise compute pipeline
+    let lighting_compute_pipeline = Arc::new({
+        // raytracing shader
+        use shaders::lighting_cs;
+
+        let shader = lighting_cs::Shader::load(device.clone()).unwrap();
         ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
     });
 
@@ -391,129 +401,107 @@ fn main() {
     // Voxel, Material, and Light Data Allocation and Generation
     //*************************************************************************************************************************************
 
-    // build the voxel data buffer
-    let voxel_data_buffer = unsafe {
-
-        let num_voxels = render_pc.vdim[0] * render_pc.vdim[1] * render_pc.vdim[2];
-
-        // CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, data_iter).unwrap()
-        CpuAccessibleBuffer::<[u32]>::uninitialized_array(device.clone(), num_voxels as usize, BufferUsage::all(), false).unwrap()
-    };
-
-    println!("Voxel Buffer initialized");
-
-    {
-        let ctx = OsnContext::new(123).unwrap();
-
-        let _ns = noise::WorleyNoise3D::new(8);
-        
-
-        let mut lock = voxel_data_buffer.write().unwrap();
-
-        let mut index = [0,0,0];
-
-        for uint in lock.iter_mut() {
-
-            let mut data = 0;
-
-            // for each uint in the buffer, there are VOXELS_PER_U32, so we have to
-            // generate multiple voxels per uint.
-            for i in 0..VOXELS_PER_U32 {
-
-                let xn = index[0] as f64;
-                let yn = index[1] as f64;
-                let zn = index[2] as f64;
-
-                let noise_scale = 64.0;
-
-                let nx = ctx.noise3(xn / noise_scale, yn / noise_scale, zn / noise_scale);
-
-                // let nx = ns.sample(xn / noise_scale, yn / noise_scale, zn / noise_scale);
-
-                if nx > 0.0 {
-                    data |= 1 << (BITS_PER_VOXEL * i);
-                }
-
-                index[0] += 1;
-                if index[0] == render_pc.vdim[0] {
-                    index[0] = 0;
-                    index[1] += 1;
-                    if index[1] == render_pc.vdim[1] {
-                        index[1] = 0;
-                        index[2] += 1;
-                    }
-                }
-            }
-
-            *uint = data;
-        }
-    }
-
-    let svdag_geometry_data = {
+    // parse voxel goemetry data
+    let mut svdag_geometry_data = {
 
         let chunk_bytes = include_bytes!("../data/bunny.svdag");
 
         bincode::deserialize::<vox::VoxelChunk>(chunk_bytes).expect("Deserialization Failed")
     };
 
+    // calculate the lod materials
+    svdag_geometry_data.calculate_lod_materials();
+
+    // load the voxel data onto the GPU
     let svdag_geometry_buffer = {
         CpuAccessibleBuffer::<[shaders::VChildDescriptor]>::from_iter(device.clone(), BufferUsage::all(), false, svdag_geometry_data.voxels.iter().cloned()).unwrap()
     };
 
     let svdag_material_buffer = {
-
-        let materials = [
-            // solid material
-            shaders::Material{
-                albedo : [1.0; 3],
-                shininess : 1.0,
-                emission : [0.0; 3],
-                roughness : 0.5,
-                transparency : 0.0,
-                flags : 0,
-                _dummy0 : [0; 8],
-            },
-        ];
-
-        CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, materials.iter().cloned()).unwrap()
+        CpuAccessibleBuffer::<[u32]>::from_iter(device.clone(), BufferUsage::all(), false, svdag_geometry_data.lod_materials.iter().cloned()).unwrap()
     };
 
 
     println!("Voxel Data initialized");
 
-    // create a list of materials to render
-    let _material_data_buffer = {
-        use shaders::Material;
 
-        let materials = [
-            // air material
-            Material {albedo : [0.0; 3], transparency: 1.0, emission: [0.0; 3], flags: 0b00000000, roughness: 0.0, shininess: 0.3, _dummy0: [0;8]},
-            // solid material
-            Material {albedo : [1.0; 3], transparency: 0.0, emission: [0.0; 3], flags: 0b00000001, roughness: 0.0, shininess: 0.3, _dummy0: [0;8]}
-        ];
-
-        CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, materials.iter().cloned()).unwrap()
-    };
-
-    
-    println!("Material Data initialized");
-
-    // create a list of materials to render
-    let _point_light_data_buffer = {
+    // create a list of point lights to render
+    let point_light_buffer = {
         use shaders::PointLight;
 
         let lights = [
             //sun
             PointLight {
                 position : [0.0, 1000.0, 0.0],
-                intensity : 1.0e5,
+                power : 1.0e5,
                 color : [0.5, 1.0, 1.0],
-                size : 5.0,
+                radius : 0.0,
             }
         ];
 
         CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, lights.iter().cloned()).unwrap()
     };
+    // create a list of directional lights to render
+    let directional_light_buffer = {
+        use shaders::DirectionalLight;
+
+        let lights = [
+            //sun
+            DirectionalLight {
+                direction : [0.0, -1.0, 0.0],
+                color : [1.0, 1.0, 1.0],
+                _dummy0 : [0;4],
+                _dummy1 : [0;4],
+            }
+        ];
+
+        CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, lights.iter().cloned()).unwrap()
+    };
+    // create a list of spot lights to render
+    let spot_light_buffer = {
+        use shaders::SpotLight;
+
+        let lights = [
+            //sun
+            SpotLight {
+                direction : [0.0, -1.0, 0.0],
+                position : [0.0; 3],
+                half_angle : 0.0,
+                power : 0.0,
+                color : [1.0, 1.0, 1.0],
+                _dummy0 : [0;4],
+            }
+        ];
+
+        CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, lights.iter().cloned()).unwrap()
+    };
+
+    println!("Created Light Buffers");
+    
+    let basic_brdf = brdf::BRDF::read_matusik_brdf_file(Path::new("data/brdf.bin"), [90, 90, 90, 90], 2, 2).expect("could not load brdf file");
+    // create the brdf buffer
+    let brdf_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, (0..(basic_brdf.len())).map(|_| 0.0f32)).unwrap();
+
+    basic_brdf.write_to_buffer(&mut brdf_buffer.write().unwrap(), 0);
+
+
+    // create a list of materials to render
+    let material_buffer = {
+        use shaders::Material;
+
+        let materials = [
+            // air material
+            Material {brdf : basic_brdf.create_shader_type(0), albedo : [0.0; 3], transparency: 1.0, emission: [0.0; 3], flags: 0b00000000, roughness: 0.0, shininess: 0.3, _dummy0: [0;8]},
+            // solid material
+            Material {brdf : basic_brdf.create_shader_type(0), albedo : [1.0; 3], transparency: 0.0, emission: [0.0; 3], flags: 0b00000001, roughness: 0.0, shininess: 0.3, _dummy0: [0;8]}
+        ];
+
+        CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, materials.iter().cloned()).unwrap()
+    };
+
+    
+    println!("Created BRDF Buffer");
+    println!("Material Data initialized");
 
     //*************************************************************************************************************************************
     // Main Event Loop
@@ -631,6 +619,42 @@ fn main() {
                     .build().unwrap()
                 );
 
+
+                let lighting_layout = lighting_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
+                let lighting_set = Arc::new(PersistentDescriptorSet::start(lighting_layout.clone())
+                    .add_buffer(material_buffer.clone()).unwrap()
+                    .add_buffer(brdf_buffer.clone()).unwrap()
+                    .add_buffer(point_light_buffer.clone()).unwrap()
+                    .add_buffer(directional_light_buffer.clone()).unwrap()
+                    .add_buffer(spot_light_buffer.clone()).unwrap()
+                    // initial depth buffer
+                    .add_image(gbuffer.position_buffer.clone()).unwrap()
+                    // normal buffer
+                    .add_image(gbuffer.normal_buffer.clone()).unwrap()
+                    // depth buffer
+                    .add_image(gbuffer.depth_buffer.clone()).unwrap()
+                    // voxel index buffer
+                    .add_image(gbuffer.index_buffer.clone()).unwrap()
+                    // voxel index buffer
+                    .add_image(gbuffer.index_buffer.clone()).unwrap()
+                    // random seed buffer
+                    .add_image(gbuffer.seed_buffer.clone()).unwrap()
+                    .add_buffer(svdag_geometry_buffer.clone()).unwrap()
+                    .add_buffer(svdag_material_buffer.clone()).unwrap()
+                    .build().unwrap()
+                );
+
+                let lighting_pc = shaders::LightingPushConstantData {
+                    ambient_light : [0.0; 3],
+                    camera_forward : pre_trace_pc.camera_forward,
+                    camera_up : pre_trace_pc.camera_up,
+                    camera_origin : pre_trace_pc.camera_origin,
+                    n_directional_lights : 0,
+                    n_point_lights : 0,
+                    n_spot_lights : 0,
+                    render_dist : render_pc.render_dist,
+                };
+
                 // we build a command buffer for this frame
                 // needs to be built each frame because we don't know which swapchain image we will be told to render to
                 // its possible a command buffer could be built for each swapchain ahead of time, but that would add complexity
@@ -640,13 +664,7 @@ fn main() {
                 let render_command_buffer = render_command_buffer
                     .dispatch([(gbuffer.pre_trace_width - 1) / 32 + 1, (gbuffer.pre_trace_height - 1) / 32 + 1, 1], pre_trace_compute_pipeline.clone(), pre_trace_set.clone(), pre_trace_pc).unwrap()
                     .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], lighting_compute_pipeline.clone(), lighting_set.clone(), lighting_pc).unwrap()
                     .build().unwrap();
 
                 let future = previous_frame_end.take().unwrap()

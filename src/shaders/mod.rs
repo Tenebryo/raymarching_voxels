@@ -64,10 +64,14 @@ pub use denoise_cs::ty::DenoisePushConstantData;
 pub use reproject_cs::ty::ReprojectPushConstantData;
 pub use intersect_cs::ty::IntersectPushConstants;
 pub use pre_trace_cs::ty::PreTracePushConstants;
+pub use lighting_cs::ty::LightingPushConstantData;
 
 // Graphics Primitive Types
-pub use render_cs::ty::Material;
-pub use render_cs::ty::PointLight;
+pub use lighting_cs::ty::BRDF;
+pub use lighting_cs::ty::PointLight;
+pub use lighting_cs::ty::DirectionalLight;
+pub use lighting_cs::ty::SpotLight;
+pub use lighting_cs::ty::Material;
 
 // these redefinition shenanigans are necessary because serde can't quite derive
 // serialize/deserialize for types in another module that are used in Vec fields

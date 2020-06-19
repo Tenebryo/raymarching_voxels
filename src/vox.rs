@@ -18,6 +18,8 @@ pub enum Voxel {
 #[derive(Serialize, Deserialize)]
 pub struct VoxelChunk {
     pub voxels : Vec<VChildDescriptor>,
+    #[serde(default)]
+    pub lod_materials : Vec<u32>,
 }
 
 const fn num_bits<T>() -> usize { std::mem::size_of::<T>() * 8 }
@@ -75,6 +77,7 @@ impl VoxelChunk {
             voxels : vec![VChildDescriptor{
                 sub_voxels : [0;8],
             }],
+            lod_materials : vec![],
         }
     }
 
@@ -206,13 +209,51 @@ impl VoxelChunk {
             voxels.push(v);
         }
 
-        Self {voxels,}
+        Self {voxels,lod_materials : vec![]}
+    }
+
+    /// recursive helper function to calculate the 
+    fn recurse_calculate_lod_materials(&mut self, i : usize) -> u32 {
+        let v = self.voxels[i];
+
+        let mut mats : HashMap<u32, usize> = HashMap::new();
+
+        for j in 0..8 {
+            let sv = v.sub_voxels[j];
+            let m = if sv > 0 {
+                self.recurse_calculate_lod_materials(sv as usize -1)
+            } else if sv == 0 {
+                0
+            } else {
+                (-sv) as u32
+            };
+
+            mats.entry(m)
+                .and_modify(|x| *x += 1)
+                .or_insert(0usize);
+        }
+
+        let mut max_c = 0;
+        let mut max_m = 0;
+        for (&m, &c) in mats.iter() {
+            if c > max_c {
+                max_c = c;
+                max_m = m;
+            }
+        }
+
+        self.lod_materials[i] = max_m;
+        max_m
+    }
+
+    /// traverse the voxel data and determine the proper material to display for an LOD
+    pub fn calculate_lod_materials(&mut self) {
+        self.lod_materials = self.voxels.iter().map(|_| 0).collect::<Vec<u32>>();
+        self.recurse_calculate_lod_materials(0);
     }
 }
 
-pub trait Integer : Into<u32> {
-
-}
+pub trait Integer : Into<u32> {}
 
 impl Integer for u8 {}
 impl Integer for u16 {}

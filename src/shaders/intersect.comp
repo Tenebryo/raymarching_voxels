@@ -88,7 +88,8 @@ void main() {
         uint vid = 0;
         uint ret;
         uint iter;
-        bool hit = voxel_march(camera_origin + ray_dir * init_depth, ray_dir, max_depth, render_dist, dist, incidence, vid, ret, iter);
+        uint material;
+        bool hit = voxel_march(camera_origin + ray_dir * init_depth, ray_dir, max_depth, render_dist, dist, incidence, vid, material, ret, iter);
 
         dist += init_depth;
         vec3 p = camera_origin + ray_dir * dist;

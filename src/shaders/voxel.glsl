@@ -32,7 +32,7 @@ layout(binding = VOXEL_BINDING_OFFSET) buffer VoxelChildData {
     VChildDescriptor voxels[];
 };
 layout(binding = VOXEL_BINDING_OFFSET + 1) buffer VoxelMaterialData {
-    uint voxels_material[];
+    uint lod_materials[];
 };
 
 vec2 project_cube(vec3 id, vec3 od, vec3 mn, vec3 mx, out uint incidence_min, out uint incidence_max) {
@@ -183,7 +183,7 @@ uint extract_child_slot(uvec3 pos, uint scale) {
 #define VOXEL_MARCH_LOD 3
 #define VOXEL_MARCH_MAX_DIST 4
 
-bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist, out uint incidence, out uint vid, out uint return_state, out uint iterations) {
+bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist, out uint incidence, out uint vid, out uint material, out uint return_state, out uint iterations) {
 
     const uint MAX_SCALE = (1<<MAX_DAG_DEPTH);
 
@@ -264,6 +264,7 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
                 // voxel is too small
                 dist = t.x / MAX_SCALE;
                 return_state = depth >= max_depth ? VOXEL_MARCH_MAX_DEPTH : VOXEL_MARCH_LOD;
+                material = lod_materials[parent];
                 return true;
             }
 
@@ -280,6 +281,7 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
                     dist = tv.x / MAX_SCALE;
                     vid = (parent << 3) | (dmask ^ idx);
                     return_state = VOXEL_MARCH_HIT;
+                    material = voxel_get_material(parent, dmask ^ idx);
                     return true;
                 }
                 // descend:

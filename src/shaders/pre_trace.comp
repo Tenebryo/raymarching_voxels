@@ -65,7 +65,8 @@ void main() {
         uint code;
         uint iter;
         float max_dist = 100;
-        bool hit = voxel_march(camera_origin, ray_dir, max_depth, max_dist, dist, incidence, vid, code, iter);
+        uint material;
+        bool hit = voxel_march(camera_origin, ray_dir, max_depth, max_dist, dist, incidence, vid, material, code, iter);
 
         if (hit) {
             imageStore(dImage, idx, vec4(dist));

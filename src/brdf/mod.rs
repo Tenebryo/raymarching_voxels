@@ -4,6 +4,7 @@ use serde::{Serialize, Deserialize};
 use std::path::Path;
 use std::io::prelude::*;
 use std::fs::File;
+use crate::*;
 
 use rand::prelude::*;
 
@@ -32,7 +33,7 @@ impl BRDF {
     }
 
     /// reads in a file in the format described by Matusik, resampled to a new resolution using 
-    pub fn read_matusik_brdf_file<P: AsRef<Path>>(path: P, shape : [usize; 4], j : usize, k : usize) -> std::io::Result<(Self, Self, Self)> {
+    pub fn read_matusik_brdf_file<P: AsRef<Path>>(path: P, shape : [usize; 4], j : usize, k : usize) -> std::io::Result<Self> {
 
         const BRDF_SAMPLING_RES_THETA_H : usize = 90;
         const BRDF_SAMPLING_RES_THETA_D : usize = 90;
@@ -85,11 +86,7 @@ impl BRDF {
             }
         }
 
-        Ok((
-            Self::factor_measured_brdf(&resampled_data_r, shape, j, k, 32),
-            Self::factor_measured_brdf(&resampled_data_g, shape, j, k, 32),
-            Self::factor_measured_brdf(&resampled_data_b, shape, j, k, 32),
-        ))
+        Ok(Self::factor_measured_brdf(&resampled_data_r, shape, j, k, 32))
     }
 
     /// Take a fully measured BRDF in [theta_out, phi_out, theta_half, phi_half] layout, and factor it using the algorithm
@@ -191,8 +188,8 @@ impl BRDF {
     }
 
     /// Write the factored BRDF to a linear buffer for use in a compute shader.
-    /// returns the start indexes for the f, u, and v matrices
-    pub fn write_to_buffer(&self, buf : &mut WriteLock<[f32]>, i : usize) -> (usize, usize, usize) {
+    /// returns the sizes of each of the matrix buffers
+    pub fn write_to_buffer(&self, buf : &mut WriteLock<[f32]>, i : usize) {
         let nf = self.f.len();
         let nu = self.u.len();
         let nv = self.v.len();
@@ -200,11 +197,22 @@ impl BRDF {
         buf[i..(i+nf)].clone_from_slice(&self.f);
         buf[(i+nf)..(i+nf+nu)].clone_from_slice(&self.u);
         buf[(i+nf+nu)..(i+nf+nu+nv)].clone_from_slice(&self.v);
-
-        (i, i+nf, i+nf+nu)
     }
 
+    pub fn create_shader_type(&self, offset : usize) -> shaders::BRDF {
 
+        shaders::BRDF {
+            n : [self.n[0] as u32, self.n[1] as u32, self.n[2] as u32, self.n[3] as u32],
+            l : (self.j * self.k) as u32,
+            f_idx : (offset) as u32,
+            u_idx : (offset + self.f.len()) as u32,
+            v_idx : (offset + self.f.len() + self.u.len()) as u32,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.f.len() + self.u.len() + self.v.len()
+    }
 }
 
 /// Lookup theta_half index from theta half angle (non-linear map)
