@@ -539,7 +539,9 @@ void main() {
             bool hit0 = voxel_march(p0, ldir0, max_depth_light, dist0+0.1, ldist0, lincidence0, lvox_id0, lcode0, liter0);
 
             // calculate brdf pdf value for light contribution to the first intersection
-            float brdf_pdf_0 = brdf_pdf_p(); //TODO: calculate angles for the brdf
+            vec2 oa_0 = incident_angles_from_vector(norm0.xyz, norm0.zxy, -in_0);
+            vec2 ia_0 = incident_angles_from_vector(norm0.xyz, norm0.zxy, calculate_half_angle_from_incidents(-in_0, ldir0));
+            float brdf_pdf_0 = brdf_pdf_p(materials[vmat0].brdf, oa_0.x, oa_0.y, ia_0.x, ia_0.x);
 
             if (hit0) {
                 // if we collide with a voxel in the path to the light, at least contribute it's emission value
@@ -560,7 +562,9 @@ void main() {
                 hit1 = voxel_march(p1, ldir1, max_depth_light, dist1+0.1, ldist1, lincidence1, lvox_id1, lcode1, liter1);
 
                 // calculate brdf pdf value for light contribution to the second intersection
-                float brdf_pdf_1 = brdf_pdf_p(); //TODO: calculate angles for the brdf
+                vec2 oa_1 = incident_angles_from_vector(norm1.xyz, norm1.zxy, -ldir0);
+                vec2 ia_1 = incident_angles_from_vector(norm1.xyz, norm1.zxy, calculate_half_angle_from_incidents(-ldir0, ldir1));
+                float brdf_pdf_1 = brdf_pdf_p(materials[vmat1].brdf, oa_0.x, oa_0.y, ia_0.x, ia_0.x);
                 if (hit1) {
                     // if we collide with a voxel in the path to the light, at least contribute it's emission value
                     light_integral_1 += brdf_pdf_1 * vec3(materials[lvox_id1].emission) * dot(INCIDENCE_NORMAL_VECTORS[lincidence1], -ldir1);
