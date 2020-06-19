@@ -461,6 +461,7 @@ void main() {
             float lpow1 = 0;
             float dist0 = 0;
             float dist1 = 0;
+
             // calculate light type-dependent values separately 
             switch (l_type) {
                 case 0:
@@ -570,7 +571,7 @@ void main() {
                     light_integral_1 += brdf_pdf_1 * vec3(materials[lvox_id1].emission) * dot(INCIDENCE_NORMAL_VECTORS[lincidence1], -ldir1);
                 } else {
                     // if there is a path to the light, it contributes to the outbound light
-                    light_integral_1 += brdf_pdf_0 * lcolor * lpow0;
+                    light_integral_1 += brdf_pdf_1 * lcolor * lpow1;
                 }
 
             } else {
