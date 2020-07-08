@@ -49,10 +49,26 @@ pub mod pre_trace_cs {
     }
 }
 
-pub mod lighting_cs {
+pub mod light_bounce_cs {
     vulkano_shaders::shader!{
         ty: "compute",
-        path: "src/shaders/lighting.comp",
+        path: "src/shaders/light_bounce.comp",
+        include: ["src/shaders/"],
+    }
+}
+
+pub mod light_occlude_cs {
+    vulkano_shaders::shader!{
+        ty: "compute",
+        path: "src/shaders/light_occlude.comp",
+        include: ["src/shaders/"],
+    }
+}
+
+pub mod light_combine_cs {
+    vulkano_shaders::shader!{
+        ty: "compute",
+        path: "src/shaders/light_combine.comp",
         include: ["src/shaders/"],
     }
 }
@@ -64,14 +80,16 @@ pub use denoise_cs::ty::DenoisePushConstantData;
 pub use reproject_cs::ty::ReprojectPushConstantData;
 pub use intersect_cs::ty::IntersectPushConstants;
 pub use pre_trace_cs::ty::PreTracePushConstants;
-pub use lighting_cs::ty::LightingPushConstantData;
+pub use light_bounce_cs::ty::LightBouncePushConstantData;
+pub use light_occlude_cs::ty::LightOccludePushConstantData;
+pub use light_combine_cs::ty::LightCombinePushConstantData;
 
 // Graphics Primitive Types
-pub use lighting_cs::ty::BRDF;
-pub use lighting_cs::ty::PointLight;
-pub use lighting_cs::ty::DirectionalLight;
-pub use lighting_cs::ty::SpotLight;
-pub use lighting_cs::ty::Material;
+// pub use light_bounce_cs::ty::BRDF;
+pub use light_bounce_cs::ty::PointLight;
+pub use light_bounce_cs::ty::DirectionalLight;
+pub use light_bounce_cs::ty::SpotLight;
+pub use light_bounce_cs::ty::Material;
 
 // these redefinition shenanigans are necessary because serde can't quite derive
 // serialize/deserialize for types in another module that are used in Vec fields

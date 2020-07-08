@@ -253,6 +253,7 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
     tstack[0] = t.y;
 
 
+    // very hot loop
     while (iterations < 512) {
         iterations += 1;
 

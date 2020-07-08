@@ -1,0 +1,164 @@
+#version 450
+///functions that compute a single sample of the lighting function for a pixel
+/// Implements bidirectional path tracing with importance sampling
+
+
+#define PI 3.141592653
+
+struct Material {
+    uint brdf;
+    vec3 albedo;
+    float transparency;
+    vec3 emission;
+    uint flags;
+    float roughness;
+    float shininess;
+};
+
+//material information
+layout(binding = 0) readonly buffer MaterialData {
+    Material materials[];
+};
+
+layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
+// g-buffer information
+layout(rgba32f,  binding = 0) readonly uniform image2D position_buf;
+layout(rgba32f,  binding = 1) readonly uniform image2D ldir_buf;
+layout(rgba32f,  binding = 2) uniform image2D light_buf;
+
+// voxel geometry information and functions
+#define VOXEL_BINDING_OFFSET 3
+#include "voxel.glsl"
+
+layout(push_constant) uniform LightOccludePushConstantData {
+    float render_dist;
+    uint max_depth;
+};
+
+/// calculate the half-angle vector from two incident vectors (normalized)
+vec3 calculate_half_angle_from_incidents(vec3 o, vec3 i) {
+    return normalize(o + i);
+}
+
+/// calculate the other incident direction from one incident vector and the half-angle vector
+///  * `o` : the given incident vector (normalized)
+///  * `h` : the half angle vector (normalized)
+vec3 calculate_incident_from_half_angle(vec3 o, vec3 h) {
+    vec3 prj = o - dot(h, o) * h;
+    return o - 2 * prj;
+}
+
+/// computes the theta and phi angles for an incident ray
+///  * `n` : the normal vector (normalized)
+///  * `p` : a parallel vector (normalized)
+///  * `i` : the incident vector (normalized)
+vec2 incident_angles_from_vector(vec3 n, vec3 p, vec3 i) {
+    vec3 q = cross(n, p);
+    float dqi = dot(q, i);
+
+    // project onto plane
+    vec3 nprj = dot(n, i) * n;
+    vec3 pprj = dot(p, i) * p;
+    vec3 qprj = dqi * q;
+
+
+    float theta = acos(dot(p, normalize(nprj + pprj)));
+    float phi = acos(dot(p, normalize(pprj + qprj))) * sign(dqi);
+
+    return vec2(theta, phi);
+}
+
+/// computes the theta and phi angles for an incident ray
+///  * `n` : the normal vector (normalized)
+///  * `p` : a parallel vector (normalized)
+///  * `i` : the incident vector (normalized)
+vec3 vector_from_incident_angles(vec3 n, vec3 p, float theta, float phi) {
+    vec3 q = cross(n, p);
+
+    float cos_theta = cos(theta);
+
+    return (sin(theta)) * n + (cos_theta * cos(phi)) * p + (cos_theta * sin(phi)) * q;
+}
+
+/// calculate a value from a 3d halton sequence, a form of PRNG for evenly spacing samples out over a sequence
+vec3 halton_sequence3(uint index, uvec3 base) {
+    float f = 1;
+    vec3 r = vec3(0);
+
+    uint i = index;
+    while (i > 0) {
+        f = f / base.x;
+        r.x += f * mod(i, base.x);
+        i = i / base.x;
+    }
+
+    f = 1;
+    i = index;
+    while (i > 0) {
+        f = f / base.y;
+        r.y += f * mod(i, base.y);
+        i = i / base.y;
+    }
+
+    f = 1;
+    i = index;
+    while (i > 0) {
+        f = f / base.z;
+        r.z += f * mod(i, base.z);
+        i = i / base.z;
+    }
+
+    return r;
+}
+
+/// pick a point on a hemisphere
+/// r0 and r1 are two uniform random numbers in [0,1)
+vec2 sample_hemisphere(float r0, float r1) {
+    return vec2(acos(r1), 2 * PI * r0);
+}
+
+const vec3 INCIDENCE_NORMAL_VECTORS[3] = {vec3(1,0,0), vec3(0,1,0), vec3(0,0,1)};
+
+/// do multiple importance path tracing with 
+void main() {
+    ivec2 idx = ivec2(
+        gl_GlobalInvocationID.x,
+        gl_GlobalInvocationID.y
+    );
+
+    ivec2 size = imageSize(position_buf);
+
+    float aspect_ratio = float(size.x) / float(size.y);
+
+    // use a while loop for early breakout of
+    if (idx.x < size.x && idx.y < size.y) {
+
+        vec3 p = imageLoad(position_buf, idx).xyz;
+        vec4 ldd = imageLoad(ldir_buf, idx);
+
+        vec3 dir = ldd.xyz;
+        float ldist = ldd.w;
+
+
+        float dist;
+        uint incidence;
+        uint material;
+        uint ret_code;
+        uint iterations;
+        uint vid;
+
+        bool hit = voxel_march(p, dir, max_depth, ldist+0.1, dist, incidence, vid, material, ret_code, iterations);
+
+        return;
+        vec3 light;
+
+        if (hit) {
+            // if we collide with a voxel in the path to the light, at least contribute it's emission value
+            // TODO: ensure the material is available, for now we just use the sole solid material
+            imageStore(light_buf, idx, vec4(materials[1].emission * dot(INCIDENCE_NORMAL_VECTORS[incidence], -dir), 1.0));
+            // imageStore(light_buf, idx, vec4(materials[material].emission * dot(INCIDENCE_NORMAL_VECTORS[incidence], -dir), 1.0));
+        }
+        // otherwise, we keep the light value from the light, which was set from the bounce shader
+        
+    }
+}

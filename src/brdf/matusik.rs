@@ -177,7 +177,7 @@ pub fn lookup_brdf_val(brdf : &[f32], theta_in : f32, fi_in : f32, theta_out : f
 {
 	// Convert to halfangle / difference angle coordinates
 	
-	let (theta_half, fi_half, theta_diff, fi_diff) = std_coords_to_half_diff_coords(theta_in, fi_in, theta_out, fi_out);
+	let (theta_half, _fi_half, theta_diff, fi_diff) = std_coords_to_half_diff_coords(theta_in, fi_in, theta_out, fi_out);
 
 
 	// Find index.
@@ -193,7 +193,7 @@ pub fn lookup_brdf_val(brdf : &[f32], theta_in : f32, fi_in : f32, theta_out : f
 
 	
 	if red_val < 0.0 || green_val < 0.0 || blue_val < 0.0 {
-        eprintln!("Below horizon.");
+        // eprintln!("Below horizon.");
     }
 
     (red_val, green_val, blue_val)

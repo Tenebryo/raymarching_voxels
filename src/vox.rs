@@ -212,7 +212,7 @@ impl VoxelChunk {
         Self {voxels,lod_materials : vec![]}
     }
 
-    /// recursive helper function to calculate the 
+    /// recursive helper function to calculate the most common material from each voxel's subvoxels
     fn recurse_calculate_lod_materials(&mut self, i : usize) -> u32 {
         let v = self.voxels[i];
 

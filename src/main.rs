@@ -175,11 +175,29 @@ fn main() {
     });
 
     // build denoise compute pipeline
-    let lighting_compute_pipeline = Arc::new({
+    let light_bounce_compute_pipeline = Arc::new({
         // raytracing shader
-        use shaders::lighting_cs;
+        use shaders::light_bounce_cs;
 
-        let shader = lighting_cs::Shader::load(device.clone()).unwrap();
+        let shader = light_bounce_cs::Shader::load(device.clone()).unwrap();
+        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
+    });
+
+    // build denoise compute pipeline
+    let light_occlude_compute_pipeline = Arc::new({
+        // raytracing shader
+        use shaders::light_occlude_cs;
+
+        let shader = light_occlude_cs::Shader::load(device.clone()).unwrap();
+        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
+    });
+
+    // build denoise compute pipeline
+    let light_combine_compute_pipeline = Arc::new({
+        // raytracing shader
+        use shaders::light_combine_cs;
+
+        let shader = light_combine_cs::Shader::load(device.clone()).unwrap();
         ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
     });
 
@@ -229,11 +247,11 @@ fn main() {
         MipmapMode::Linear, SamplerAddressMode::Repeat, SamplerAddressMode::Repeat,
         SamplerAddressMode::Repeat, 0.0, 1.0, 0.0, 0.0).unwrap();
 
-    let _nst_sampler = Sampler::new(device.clone(), Filter::Nearest, Filter::Nearest,
+    let nst_sampler = Sampler::new(device.clone(), Filter::Nearest, Filter::Nearest,
         MipmapMode::Nearest, SamplerAddressMode::Repeat, SamplerAddressMode::Repeat,
         SamplerAddressMode::Repeat, 0.0, 1.0, 0.0, 0.0).unwrap();
 
-    let (_blue_noise_tex, load_future) = {
+    let (blue_noise_tex, load_future) = {
         let png_bytes = [
             include_bytes!("../data/blue_noise/HDR_RGBA_0.png").to_vec(),
             include_bytes!("../data/blue_noise/HDR_RGBA_1.png").to_vec(),
@@ -301,7 +319,7 @@ fn main() {
             include_bytes!("../data/blue_noise/HDR_RGBA_63.png").to_vec()
         ];
 
-        let mut image_data = Vec::new();
+        let mut image_data : Vec<u8> = Vec::new();
         image_data.resize((64 * 64 * 64 * 4) as usize, 0);
         let dimensions = Dimensions::Dim3d { width: 64, height: 64, depth: png_bytes.len() as u32 };
         for i in 0..64 {
@@ -424,7 +442,6 @@ fn main() {
 
     println!("Voxel Data initialized");
 
-
     // create a list of point lights to render
     let point_light_buffer = {
         use shaders::PointLight;
@@ -478,7 +495,8 @@ fn main() {
 
     println!("Created Light Buffers");
     
-    let basic_brdf = brdf::BRDF::read_matusik_brdf_file(Path::new("data/brdf.bin"), [90, 90, 90, 90], 2, 2).expect("could not load brdf file");
+    // let basic_brdf = brdf::BRDF::read_matusik_brdf_file(Path::new("data/teflon.bin"), [90, 90, 90, 90], 2, 2).expect("could not load brdf file");
+    let basic_brdf = bincode::deserialize::<brdf::BRDF>(include_bytes!("../data/teflon-16-16-128-32.brdf")).unwrap();
     // create the brdf buffer
     let brdf_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, (0..(basic_brdf.len())).map(|_| 0.0f32)).unwrap();
 
@@ -491,9 +509,11 @@ fn main() {
 
         let materials = [
             // air material
-            Material {brdf : basic_brdf.create_shader_type(0), albedo : [0.0; 3], transparency: 1.0, emission: [0.0; 3], flags: 0b00000000, roughness: 0.0, shininess: 0.3, _dummy0: [0;8]},
+            // Material {brdf : basic_brdf.create_shader_type(0), albedo : [0.0; 3], transparency: 1.0, emission: [0.0; 3], flags: 0b00000000, roughness: 0.0, shininess: 0.3, _dummy0: [0;8]},
+            Material {brdf : 0, albedo : [0.0; 3], transparency: 1.0, emission: [0.0; 3], flags: 0b00000000, roughness: 0.0, shininess: 0.3, _dummy0: [0;12], _dummy1: [0;8]},
             // solid material
-            Material {brdf : basic_brdf.create_shader_type(0), albedo : [1.0; 3], transparency: 0.0, emission: [0.0; 3], flags: 0b00000001, roughness: 0.0, shininess: 0.3, _dummy0: [0;8]}
+            // Material {brdf : basic_brdf.create_shader_type(0), albedo : [1.0; 3], transparency: 0.0, emission: [0.0; 3], flags: 0b00000001, roughness: 0.0, shininess: 0.3, _dummy0: [0;8]}
+            Material {brdf : 0, albedo : [1.0; 3], transparency: 0.0, emission: [0.0; 3], flags: 0b00000001, roughness: 0.0, shininess: 0.3, _dummy0: [0;12], _dummy1: [0;8]}
         ];
 
         CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, materials.iter().cloned()).unwrap()
@@ -586,15 +606,16 @@ fn main() {
                     // initial depth buffer
                     .add_image(gbuffer.pre_depth_buffer.clone()).unwrap()
                     // normal buffer
-                    .add_image(gbuffer.normal_buffer.clone()).unwrap()
+                    .add_image(gbuffer.normal0_buffer.clone()).unwrap()
                     // position buffer
-                    .add_image(swapchain_images[image_num].clone()).unwrap()
+                    .add_image(gbuffer.position0_buffer.clone()).unwrap()
                     // depth buffer
                     .add_image(gbuffer.depth_buffer.clone()).unwrap()
-                    // voxel index buffer
-                    .add_image(gbuffer.index_buffer.clone()).unwrap()
+                    // material buffer
+                    .add_image(gbuffer.material0_buffer.clone()).unwrap()
                     // random seed buffer
-                    .add_image(gbuffer.seed_buffer.clone()).unwrap()
+                    .add_image(gbuffer.rng_seed_buffer.clone()).unwrap()
+                    .add_sampled_image(blue_noise_tex.clone(), nst_sampler.clone()).unwrap()
                     .add_buffer(svdag_geometry_buffer.clone()).unwrap()
                     .add_buffer(svdag_material_buffer.clone()).unwrap()
                     .build().unwrap()
@@ -620,39 +641,125 @@ fn main() {
                 );
 
 
-                let lighting_layout = lighting_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
-                let lighting_set = Arc::new(PersistentDescriptorSet::start(lighting_layout.clone())
+                let light_bounce_layout = light_bounce_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
+                let light_bounce_set = Arc::new(PersistentDescriptorSet::start(light_bounce_layout.clone())
                     .add_buffer(material_buffer.clone()).unwrap()
-                    .add_buffer(brdf_buffer.clone()).unwrap()
                     .add_buffer(point_light_buffer.clone()).unwrap()
                     .add_buffer(directional_light_buffer.clone()).unwrap()
                     .add_buffer(spot_light_buffer.clone()).unwrap()
-                    // initial depth buffer
-                    .add_image(gbuffer.position_buffer.clone()).unwrap()
-                    // normal buffer
-                    .add_image(gbuffer.normal_buffer.clone()).unwrap()
+                    // position buffers
+                    .add_image(gbuffer.position0_buffer.clone()).unwrap()
+                    .add_image(gbuffer.position1_buffer.clone()).unwrap()
+                    // normal buffers
+                    .add_image(gbuffer.normal0_buffer.clone()).unwrap()
+                    .add_image(gbuffer.normal1_buffer.clone()).unwrap()
                     // depth buffer
                     .add_image(gbuffer.depth_buffer.clone()).unwrap()
-                    // voxel index buffer
-                    .add_image(gbuffer.index_buffer.clone()).unwrap()
-                    // voxel index buffer
-                    .add_image(gbuffer.index_buffer.clone()).unwrap()
+                    // matrial buffers
+                    .add_image(gbuffer.material0_buffer.clone()).unwrap()
+                    .add_image(gbuffer.material1_buffer.clone()).unwrap()
                     // random seed buffer
-                    .add_image(gbuffer.seed_buffer.clone()).unwrap()
+                    .add_image(gbuffer.rng_seed_buffer.clone()).unwrap()
+                    // light index buffer
+                    .add_image(gbuffer.light_index_buffer.clone()).unwrap()
+                    // light direction buffer
+                    .add_image(gbuffer.ldir0_buffer.clone()).unwrap()
+                    .add_image(gbuffer.ldir1_buffer.clone()).unwrap()
+                    // light value buffer
+                    .add_image(gbuffer.light0_buffer.clone()).unwrap()
+                    .add_image(gbuffer.light1_buffer.clone()).unwrap()
+                    // voxel data
                     .add_buffer(svdag_geometry_buffer.clone()).unwrap()
                     .add_buffer(svdag_material_buffer.clone()).unwrap()
                     .build().unwrap()
                 );
 
-                let lighting_pc = shaders::LightingPushConstantData {
+                let light_bounce_pc = shaders::LightBouncePushConstantData {
+                    camera_forward : pre_trace_pc.camera_forward,
+                    camera_up : pre_trace_pc.camera_up,
+                    camera_origin : pre_trace_pc.camera_origin,
+                    n_directional_lights : 1,
+                    n_point_lights : 0,
+                    n_spot_lights : 0,
+                    render_dist : render_pc.render_dist,
+                    max_depth : 6,
+                };
+                
+                let light_occlude_layout = light_occlude_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
+                let light_occlude_set_0 = Arc::new(PersistentDescriptorSet::start(light_occlude_layout.clone())
+                    // position buffers
+                    .add_image(gbuffer.position0_buffer.clone()).unwrap()
+                    // light direction buffer
+                    .add_image(gbuffer.ldir0_buffer.clone()).unwrap()
+                    // light value buffer
+                    .add_image(gbuffer.light0_buffer.clone()).unwrap()
+                    // voxel data
+                    .add_buffer(svdag_geometry_buffer.clone()).unwrap()
+                    .add_buffer(svdag_material_buffer.clone()).unwrap()
+                    .build().unwrap()
+                );
+                let light_occlude_set_1 = Arc::new(PersistentDescriptorSet::start(light_occlude_layout.clone())
+                    // position buffers
+                    .add_image(gbuffer.position1_buffer.clone()).unwrap()
+                    // light direction buffer
+                    .add_image(gbuffer.ldir1_buffer.clone()).unwrap()
+                    // light value buffer
+                    .add_image(gbuffer.light1_buffer.clone()).unwrap()
+                    // voxel data
+                    .add_buffer(svdag_geometry_buffer.clone()).unwrap()
+                    .add_buffer(svdag_material_buffer.clone()).unwrap()
+                    .build().unwrap()
+                );
+
+                let light_occlude_pc = shaders::LightOccludePushConstantData {
+                    render_dist : render_pc.render_dist,
+                    max_depth : 6,
+                };
+
+                
+                let light_combine_layout = light_combine_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
+                let light_combine_set = Arc::new(PersistentDescriptorSet::start(light_combine_layout.clone())
+                    .add_buffer(material_buffer.clone()).unwrap()
+                    .add_buffer(point_light_buffer.clone()).unwrap()
+                    .add_buffer(directional_light_buffer.clone()).unwrap()
+                    .add_buffer(spot_light_buffer.clone()).unwrap()
+                    // position buffers
+                    .add_image(gbuffer.position0_buffer.clone()).unwrap()
+                    .add_image(gbuffer.position1_buffer.clone()).unwrap()
+                    // normal buffers
+                    .add_image(gbuffer.normal0_buffer.clone()).unwrap()
+                    .add_image(gbuffer.normal1_buffer.clone()).unwrap()
+                    // depth buffer
+                    .add_image(gbuffer.depth_buffer.clone()).unwrap()
+                    // matrial buffers
+                    .add_image(gbuffer.material0_buffer.clone()).unwrap()
+                    .add_image(gbuffer.material1_buffer.clone()).unwrap()
+                    // random seed buffer
+                    .add_image(gbuffer.rng_seed_buffer.clone()).unwrap()
+                    // light index buffer
+                    .add_image(gbuffer.light_index_buffer.clone()).unwrap()
+                    // light direction buffer
+                    .add_image(gbuffer.ldir0_buffer.clone()).unwrap()
+                    .add_image(gbuffer.ldir1_buffer.clone()).unwrap()
+                    // light value buffer
+                    .add_image(gbuffer.light0_buffer.clone()).unwrap()
+                    .add_image(gbuffer.light1_buffer.clone()).unwrap()
+                    // output image
+                    .add_image(swapchain_images[image_num].clone()).unwrap()
+                    // voxel data
+                    .add_buffer(svdag_geometry_buffer.clone()).unwrap()
+                    .add_buffer(svdag_material_buffer.clone()).unwrap()
+                    .build().unwrap()
+                );
+
+                let light_combine_pc = shaders::LightCombinePushConstantData {
                     ambient_light : [0.0; 3],
                     camera_forward : pre_trace_pc.camera_forward,
                     camera_up : pre_trace_pc.camera_up,
                     camera_origin : pre_trace_pc.camera_origin,
-                    n_directional_lights : 0,
-                    n_point_lights : 0,
-                    n_spot_lights : 0,
-                    render_dist : render_pc.render_dist,
+                    _dummy0:[0;4],
+                    _dummy1:[0;4],
+                    _dummy2:[0;4],
                 };
 
                 // we build a command buffer for this frame
@@ -660,11 +767,14 @@ fn main() {
                 // its possible a command buffer could be built for each swapchain ahead of time, but that would add complexity
                 let render_command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap();
 
-                // render
+                // build the final rendering command buffer
                 let render_command_buffer = render_command_buffer
                     .dispatch([(gbuffer.pre_trace_width - 1) / 32 + 1, (gbuffer.pre_trace_height - 1) / 32 + 1, 1], pre_trace_compute_pipeline.clone(), pre_trace_set.clone(), pre_trace_pc).unwrap()
                     .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], lighting_compute_pipeline.clone(), lighting_set.clone(), lighting_pc).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], light_bounce_compute_pipeline.clone(), light_bounce_set.clone(), light_bounce_pc).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_0.clone(), light_occlude_pc).unwrap()
+                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_1.clone(), light_occlude_pc).unwrap()
+                    // .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], light_combine_compute_pipeline.clone(), light_combine_set.clone(), light_combine_pc).unwrap()
                     .build().unwrap();
 
                 let future = previous_frame_end.take().unwrap()

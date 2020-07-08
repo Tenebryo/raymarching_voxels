@@ -14,6 +14,8 @@ use std::f32::consts::PI;
 
 mod matusik;
 
+
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct BRDF {
     n : [usize;4],
@@ -29,7 +31,66 @@ pub struct BRDF {
 
 impl BRDF {
     /// creates a Phong BRDF, then computes the factored form for the
-    pub fn phong_brdf(resolution : [usize;4], j : usize, k : usize) {
+    pub fn phong_brdf(ks : f32, kd : f32, ka : f32, a : f32, shape : [usize;4], j : usize, k : usize) -> Self {
+        let mut sampled_data = Vec::with_capacity(shape[0] * shape[1] * shape[2] * shape[3]);
+
+        for theta_out_i in 0..shape[0] {
+            println!("theta_out_i : {}", theta_out_i);
+            let theta_out = theta_angle(theta_out_i as isize, shape[0] as isize);
+            for phi_out_i in 0..shape[1] {
+                let phi_out = phi_angle(phi_out_i as isize, shape[1] as isize);
+                for theta_half_i in 0..shape[2] {
+                    let theta_half = theta_half_angle(theta_half_i as isize, shape[2] as isize);
+                    for phi_half_i in 0..shape[3] {
+                        let phi_half = phi_angle(phi_half_i as isize, shape[3] as isize);
+
+                        let (theta_in, phi_in) = get_angles_from_out_half_angles(theta_out, phi_out, theta_half, phi_half);
+
+                        // calculate phong brdf value
+                        // compute in vector
+                        let in_vec_z = theta_in.cos();
+                        let proj_in_vec = theta_in.sin();
+                        let in_vec_x = proj_in_vec*(PI + phi_in).cos();
+                        let in_vec_y = proj_in_vec*(PI + phi_in).sin();
+                        let mut iv = [in_vec_x,in_vec_y,in_vec_z];
+                        let in_mag = (iv[0] * iv[0] + iv[1] * iv[1] + iv[2] * iv[2]).sqrt();
+                        iv[0] /= in_mag;
+                        iv[1] /= in_mag;
+                        iv[2] /= in_mag;
+
+
+                        // compute out vector
+                        let out_vec_z = theta_out.cos();
+                        let proj_out_vec = theta_out.sin();
+                        let out_vec_x = proj_out_vec*phi_out.cos();
+                        let out_vec_y = proj_out_vec*phi_out.sin();
+                        let mut ov = [out_vec_x,out_vec_y,out_vec_z];
+                        let out_mag = (ov[0] * ov[0] + ov[1] * ov[1] + ov[2] * ov[2]).sqrt();
+                        ov[0] /= out_mag;
+                        ov[1] /= out_mag;
+                        ov[2] /= out_mag;
+
+                        let mut dot = ov[0] * iv[0] + ov[1] * iv[1] + ov[2] * iv[2];
+                        if dot < 0.0001 {
+                            dot = 0.0001;
+                        }
+
+                        let mut cos = theta_in.cos();
+                        if cos < 0.0001 {
+                            cos = 0.0001;
+                        }
+
+                        let illumination = kd * cos + ks * dot.powf(a);
+
+                        // println!("{}", illumination);
+
+                        sampled_data.push(illumination);
+                    }
+                }
+            }
+        }
+
+        Self::factor_measured_brdf(&sampled_data, shape, j, k, 32)
     }
 
     /// reads in a file in the format described by Matusik, resampled to a new resolution using 
@@ -42,30 +103,34 @@ impl BRDF {
         // read data in from file
         let mut file = File::open(path)?;
 
-        let mut data = vec![];
-        let _n_read = file.read(&mut data)?;
+        let mut data = Vec::with_capacity(file.metadata()?.len() as usize);
+        let n_read = file.read_to_end(&mut data)?;
+
+        assert!(n_read >= 12);
 
         let n_theta_h = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
         let n_theta_d = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
         let n_phi_d   = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
 
-        let n = n_theta_h * n_theta_d * n_phi_d / 2;
+        let n = n_theta_h * n_theta_d * n_phi_d;
 
         assert_eq!(n, BRDF_SAMPLING_RES_THETA_H * BRDF_SAMPLING_RES_THETA_D * BRDF_SAMPLING_RES_PHI_D / 2);
 
         // this isn't very efficient (should just reinterpret the data), but this is easier to understand
-        let brdf_data = data[12..(3*std::mem::size_of::<f64>()*n+12)].chunks_exact(4).map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]) as f32).collect::<Vec<_>>();
+        let brdf_data = data[12..(3*std::mem::size_of::<f64>()*n+12)]
+            .chunks_exact(std::mem::size_of::<f64>())
+            .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]) as f32)
+            .collect::<Vec<_>>();
 
 
         // matusik parameterized the BRDF data by [theta_half, theta_diff, phi_diff] (isotropic brdf), but we want to parameterize it
         // by [theta_out, phi_out, theta_half, phi_half], so we have to resample the brdf data
         let nn = shape[0] * shape[1] * shape[2] * shape[3];
 
-        let mut resampled_data_r = Vec::with_capacity(nn);
-        let mut resampled_data_g = Vec::with_capacity(nn);
-        let mut resampled_data_b = Vec::with_capacity(nn);
+        let mut resampled_data = Vec::with_capacity(nn);
 
         for theta_out_i in 0..shape[0] {
+            println!("theta_out_i : {}", theta_out_i);
             let theta_out = theta_angle(theta_out_i as isize, shape[0] as isize);
             for phi_out_i in 0..shape[1] {
                 let phi_out = phi_angle(phi_out_i as isize, shape[1] as isize);
@@ -78,15 +143,13 @@ impl BRDF {
 
                         let (r, g, b) = matusik::lookup_brdf_val(&brdf_data, theta_in, phi_in, theta_out, phi_out);
 
-                        resampled_data_r.push(r);
-                        resampled_data_g.push(g);
-                        resampled_data_b.push(b);
+                        resampled_data.push((r + g + b) / 3.0);
                     }
                 }
             }
         }
 
-        Ok(Self::factor_measured_brdf(&resampled_data_r, shape, j, k, 32))
+        Ok(Self::factor_measured_brdf(&resampled_data, shape, j, k, 32))
     }
 
     /// Take a fully measured BRDF in [theta_out, phi_out, theta_half, phi_half] layout, and factor it using the algorithm
@@ -104,6 +167,7 @@ impl BRDF {
 
         //f has shape [n_th_o * n_ph_o, j]
         //g has shape [j, n_th_i * n_ph_i]
+        // this function call is the big expense since it is factoring a large matrix
         let (f, g) = nmf(DMatrix::from_row_slice(wo_n, wi_n, data), j, iterations);
 
         assert_eq!(f.shape(), (wo_n, j));
@@ -118,7 +182,7 @@ impl BRDF {
 
             // reshape each column of g to [n_th_u, n_phi_i] and factor
 
-            let (u,v) = nmf(DMatrix::from_column_slice(shape[2], shape[3], g.column(ji).as_slice()), k, iterations);
+            let (u,v) = nmf(DMatrix::from_row_slice(shape[2], shape[3], &g.row(ji).iter().cloned().collect::<Vec<_>>()), k, iterations);
 
             assert_eq!(u.shape(), (shape[2], k));
             assert_eq!(v.shape(), (k, shape[3]));
@@ -131,7 +195,7 @@ impl BRDF {
 
 
         // f_data has shape [j*k, n_th_o * n_ph_o]
-        let mut f_data = Vec::with_capacity(wo_n * l_n);
+        let mut f_data = (0..(wo_n * l_n)).map(|_| 0.0).collect::<Vec<f32>>();
 
         // *jk_means have shape [j,k]
         let mut ujk_means = Vec::with_capacity(j * k);
@@ -199,16 +263,16 @@ impl BRDF {
         buf[(i+nf+nu)..(i+nf+nu+nv)].clone_from_slice(&self.v);
     }
 
-    pub fn create_shader_type(&self, offset : usize) -> shaders::BRDF {
+    // pub fn create_shader_type(&self, offset : usize) -> shaders::BRDF {
 
-        shaders::BRDF {
-            n : [self.n[0] as u32, self.n[1] as u32, self.n[2] as u32, self.n[3] as u32],
-            l : (self.j * self.k) as u32,
-            f_idx : (offset) as u32,
-            u_idx : (offset + self.f.len()) as u32,
-            v_idx : (offset + self.f.len() + self.u.len()) as u32,
-        }
-    }
+    //     shaders::BRDF {
+    //         n : [self.n[0] as u32, self.n[1] as u32, self.n[2] as u32, self.n[3] as u32],
+    //         l : (self.j * self.k) as u32,
+    //         f_idx : (offset) as u32,
+    //         u_idx : (offset + self.f.len()) as u32,
+    //         v_idx : (offset + self.f.len() + self.u.len()) as u32,
+    //     }
+    // }
 
     pub fn len(&self) -> usize {
         self.f.len() + self.u.len() + self.v.len()
@@ -416,7 +480,7 @@ fn brdf_nmf_factoring_test() {
 
     let start = Instant::now();
 
-    let (g,f) = nmf(y.clone(), 16, 16);
+    let (g,f) = nmf(y.clone(), 16, 32);
 
     let dur = start.elapsed();
 
@@ -433,4 +497,59 @@ fn brdf_nmf_factoring_test() {
 
     println!("Error: {}", sum / (256.0 * 128.0));
     println!("Time: {:?}", dur);
+}
+
+
+#[test]
+fn brdf_matusik_convert_test() {
+    use std::time::Instant;
+
+    let shape = [16,16,128,16];
+
+    let start = Instant::now();
+    let brdf = brdf::BRDF::read_matusik_brdf_file(
+        Path::new("data/teflon.bin"), 
+        shape, 2, 2
+    ).expect("could not load brdf file");
+    let elapsed = start.elapsed();
+
+    let mut output_file = File::create(
+        format!("data/teflon-{}-{}-{}-{}.brdf", shape[0], shape[1], shape[2], shape[3]))
+        .expect("could not create output file");
+
+    output_file.write_all(&bincode::serialize(&brdf).expect("failed to serialize brdf")).expect("failed to write to output file");
+
+    println!("f: {:?}", brdf.f);
+    println!("u: {:?}", brdf.u);
+    println!("v: {:?}", brdf.v);
+
+    println!("Time to process: {:?}", elapsed);
+    println!("BRDF Size: {}B", brdf.len() * 4);
+}
+
+#[test]
+fn brdf_phong_test() {
+    use std::time::Instant;
+
+    let shape = [16,16,128,16];
+
+    let start = Instant::now();
+    let brdf = brdf::BRDF::phong_brdf(
+        0.51, 0.51, 0.51, 0.51,
+        shape, 1, 1
+    );
+    let elapsed = start.elapsed();
+
+    let mut output_file = File::create(
+        format!("data/phong-{}-{}-{}-{}.brdf", shape[0], shape[1], shape[2], shape[3]))
+        .expect("could not create output file");
+
+    output_file.write_all(&bincode::serialize(&brdf).expect("failed to serialize brdf")).expect("failed to write to output file");
+
+    println!("f: {:?}", brdf.f);
+    println!("u: {:?}", brdf.u);
+    println!("v: {:?}", brdf.v);
+
+    println!("Time to process: {:?}", elapsed);
+    println!("BRDF Size: {}B", brdf.len() * 4);
 }

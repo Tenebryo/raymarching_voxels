@@ -5,10 +5,11 @@ layout(r32f, binding = 0) uniform image2D initialDepthImage;  // depth
 layout(rgba32f, binding = 1) uniform image2D nImage;  // normal
 layout(rgba32f, binding = 2) uniform image2D pImage;  // world position
 layout(r32f, binding = 3) uniform image2D dImage;  // depth
-layout(r32ui, binding = 4) uniform uimage2D mImage;   // voxel index
-layout(r32ui, binding = 5) uniform uimage2D sImage;   // random seed index
+layout(r32ui, binding = 4) uniform uimage2D mImage;   // material index
+layout(rgba32ui, binding = 5) uniform uimage2D sImage;   // random seed index
+layout(binding = 6) uniform sampler3D blue_noise;   // random seed index
 
-#define VOXEL_BINDING_OFFSET 6
+#define VOXEL_BINDING_OFFSET 7
 #include "voxel.glsl"
 
 layout(push_constant) uniform IntersectPushConstants {
@@ -95,18 +96,21 @@ void main() {
         vec3 p = camera_origin + ray_dir * dist;
         vec3 n = INCIDENCE_NORMAL_VECTORS[incidence];
 
+        uint seed_shift_0 = idx.x * 531 + idx.y * 73;
+        uint seed_shift_1 = idx.x * 91 + idx.y * 347;
+
         if (hit) {
             imageStore(nImage, idx, vec4(n,1.0));
             imageStore(dImage, idx, vec4(dist));
             imageStore(pImage, idx, vec4(p, 1));
-            imageStore(mImage, idx, uvec4(vid));
-            imageStore(sImage, idx, uvec4(frame_idx, mod(frame_idx * frame_idx + 761, 1000007), 0, 0));
+            imageStore(mImage, idx, uvec4(material));
+            imageStore(sImage, idx, uvec4(frame_idx + seed_shift_0, mod(frame_idx + seed_shift_1 + 761, 1000007), 0, 0));
         } else {
-            imageStore(nImage, idx, vec4(0.1));
-            imageStore(dImage, idx, vec4(0.1));
-            imageStore(pImage, idx, vec4(0.1));
+            imageStore(nImage, idx, vec4(0.0));
+            imageStore(dImage, idx, vec4(render_dist+1));
+            imageStore(pImage, idx, vec4(camera_origin + ray_dir * render_dist, 0.0));
             imageStore(mImage, idx, uvec4(0));
-            imageStore(sImage, idx, uvec4(0));
+            imageStore(sImage, idx, uvec4(frame_idx + seed_shift_0, mod(frame_idx + seed_shift_1 + 761, 1000007), 0, 0));
         }
     }
 }
