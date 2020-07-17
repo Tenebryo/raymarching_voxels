@@ -19,7 +19,7 @@ struct BRDF {
     uint v_idx;
 };
 
-layout(binding = BRDF_BINDING_OFFSET) readonly buffer BRDFData {
+layout(binding = BRDF_BINDING_OFFSET) readonly buffer BRDFMetaData {
     BRDF brdfs[];
 };
 layout(binding = BRDF_BINDING_OFFSET+1) readonly buffer BRDFData {
@@ -152,49 +152,6 @@ void brdf_index_to_half_angle(BRDF brdf, uint zi, uint phi_i, out float z, out f
     phi = 2.0 * PI * phi_i / float(brdf.n);
 }
 
-/// calculate the half-angle vector from two incident vectors (normalized)
-vec3 calculate_half_angle_from_incidents(vec3 o, vec3 i) {
-    return normalize(o + i);
-}
-
-/// calculate the other incident direction from one incident vector and the half-angle vector
-///  * `o` : the given incident vector (normalized)
-///  * `h` : the half angle vector (normalized)
-vec3 calculate_incident_from_half_angle(vec3 o, vec3 h) {
-    vec3 prj = o - dot(h, o) * h;
-    return o - 2 * prj;
-}
-
-/// computes the theta and phi angles for an incident ray
-///  * `n` : the normal vector (normalized)
-///  * `p` : a parallel vector (normalized)
-///  * `i` : the incident vector (normalized)
-vec2 incident_angles_from_vector(vec3 n, vec3 p, vec3 i) {
-    vec3 q = cross(n, p);
-    float dqi = dot(q, i);
-
-    // project onto plane
-    vec3 nprj = dot(n, i) * n;
-    vec3 pprj = dot(p, i) * p;
-    vec3 qprj = dqi * q;
-
-
-    float theta = acos(dot(p, normalize(nprj + pprj)));
-    float phi = acos(dot(p, normalize(pprj + qprj))) * sign(dqi);
-
-    return vec2(theta, phi);
-}
-/// computes the theta and phi angles for an incident ray
-///  * `n` : the normal vector (normalized)
-///  * `p` : a parallel vector (normalized)
-///  * `i` : the incident vector (normalized)
-vec3 vector_from_incident_angles(vec3 n, vec3 p, float theta, float phi) {
-    vec3 q = cross(n, p);
-
-    float cos_theta = cos(theta);
-
-    return (sin(theta)) * n + (cos_theta * cos(phi)) * p + (cos_theta * sin(phi)) * q;
-}
 
 /// Sample a vector from the BRDF conditioned on the outbound ray defined by azimuthal and elevation angles
 /// and 3 random numbers in the range [0,1)

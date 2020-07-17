@@ -1,6 +1,9 @@
 #version 450
 
-layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
+
+// specialization constants for the local sizes
+layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
+
 layout(r32f, binding = 0) uniform image2D initialDepthImage;  // depth
 layout(rgba32f, binding = 1) uniform image2D nImage;  // normal
 layout(rgba32f, binding = 2) uniform image2D pImage;  // world position
@@ -19,6 +22,8 @@ layout(push_constant) uniform IntersectPushConstants {
     uint max_depth;
     vec3 camera_up;
     float render_dist;
+    uint noise_idx;
+    uint noise_frames;
 };
 
 const vec3 colors[5] = {
@@ -96,21 +101,27 @@ void main() {
         vec3 p = camera_origin + ray_dir * dist;
         vec3 n = INCIDENCE_NORMAL_VECTORS[incidence];
 
+        vec4 noise_value = texture(blue_noise, vec3(idx / vec2(noise_frames), noise_idx / float(noise_frames)));
+
         uint seed_shift_0 = idx.x * 531 + idx.y * 73;
         uint seed_shift_1 = idx.x * 91 + idx.y * 347;
 
+        uint noise_scale = 1024;
+
         if (hit) {
-            imageStore(nImage, idx, vec4(n,1.0));
+            imageStore(nImage, idx, vec4(n, 1.0));
             imageStore(dImage, idx, vec4(dist));
-            imageStore(pImage, idx, vec4(p, 1));
+            imageStore(pImage, idx, vec4(p, 1.0));
             imageStore(mImage, idx, uvec4(material));
-            imageStore(sImage, idx, uvec4(frame_idx + seed_shift_0, mod(frame_idx + seed_shift_1 + 761, 1000007), 0, 0));
+            imageStore(sImage, idx, uvec4(noise_value * noise_scale));
+            // imageStore(sImage, idx, uvec4(frame_idx + seed_shift_0, mod(frame_idx + seed_shift_1 + 761, 1000007), 0, 0));
         } else {
             imageStore(nImage, idx, vec4(0.0));
             imageStore(dImage, idx, vec4(render_dist+1));
             imageStore(pImage, idx, vec4(camera_origin + ray_dir * render_dist, 0.0));
             imageStore(mImage, idx, uvec4(0));
-            imageStore(sImage, idx, uvec4(frame_idx + seed_shift_0, mod(frame_idx + seed_shift_1 + 761, 1000007), 0, 0));
+            imageStore(sImage, idx, uvec4(noise_value * noise_scale));
+            // imageStore(sImage, idx, uvec4(frame_idx + seed_shift_0, mod(frame_idx + seed_shift_1 + 761, 1000007), 0, 0));
         }
     }
 }

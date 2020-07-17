@@ -5,9 +5,13 @@
 #endif
 /// datastructures and methods for processing voxel data
 
+#define VOXEL_BINDING_END (VOXEL_BINDING_OFFSET+2)
+
 #ifndef MAX_DAG_DEPTH
 #define MAX_DAG_DEPTH (16)
 #endif
+
+#define MIN_VOXEL_SIZE (1.0 / pow(2, MAX_DAG_DEPTH))
 
 
 #define AXIS_X_MASK 1

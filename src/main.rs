@@ -17,7 +17,7 @@ use vulkano::command_buffer::{AutoCommandBufferBuilder, DynamicState, sys::{Unsa
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use vulkano::descriptor::PipelineLayoutAbstract;
 use vulkano::device::{Device, DeviceExtensions};
-use vulkano::instance::{Instance, PhysicalDevice, QueueFamily};
+use vulkano::instance::{Instance, InstanceExtensions, PhysicalDevice, QueueFamily};
 use vulkano::pipeline::ComputePipeline;
 use vulkano::sync::{GpuFuture, FlushError, PipelineStages};
 use vulkano::sync;
@@ -47,6 +47,8 @@ use std::time::Instant;
 use std::io::stdout;
 use std::path::*;
 
+use rand::prelude::*;
+
 use crossterm::{
     ExecutableCommand,
     cursor::MoveUp
@@ -69,7 +71,11 @@ fn main() {
     //*************************************************************************************************************************************
 
     // As with other examples, the first step is to create an instance.
-    let required_extensions = vulkano_win::required_extensions();
+    let required_extensions = InstanceExtensions{
+        // needed to get physical device metadata
+        khr_get_physical_device_properties2: true,
+        ..vulkano_win::required_extensions()
+    };
     let instance = Instance::new(None, &required_extensions, None).unwrap();
 
     // Choose which physical device to use.
@@ -80,6 +86,8 @@ fn main() {
         .with_title("Voxel Renderer")
         .with_maximized(true)
         .build_vk_surface(&event_loop, instance.clone()).unwrap();
+
+    surface.window().set_maximized(true);
 
     let compute_queue_family = physical.queue_families().find(|&q| q.supports_compute()).unwrap();
     // We take the first queue that supports drawing to our window.
@@ -105,20 +113,24 @@ fn main() {
     // Compute Pipeline Creation
     //*************************************************************************************************************************************
 
-    // build rendering compute pipeline
-    let _render_compute_pipeline = Arc::new({
-        // raytracing shader
-        use shaders::render_cs;
+    let (local_size_x, local_size_y) = match physical.extended_properties().subgroup_size() {
+        Some(subgroup_size) => {
+            println!(
+                "Subgroup size for '{}' device is {}",
+                physical.name(),
+                subgroup_size
+            );
 
-        use shaders::render_cs::SpecializationConstants;
+            // Most of the subgroup values are divisors of 8
+            (8, subgroup_size / 8)
+        }
+        None => {
+            println!("This Vulkan driver doesn't provide physical device Subgroup information");
 
-        let spec_const = SpecializationConstants {
-            BITS_PER_VOXEL
-        };
-
-        let shader = render_cs::Shader::load(device.clone()).unwrap();
-        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_const).unwrap()
-    });
+            // Using fallback constant
+            (8, 8)
+        }
+    };
 
     // build update compute pipeline
     let _update_compute_pipeline = Arc::new({
@@ -161,8 +173,13 @@ fn main() {
         // raytracing shader
         use shaders::intersect_cs;
 
+        let spec_consts = intersect_cs::SpecializationConstants{
+            constant_1 : local_size_x,
+            constant_2 : local_size_y,
+        };
+
         let shader = intersect_cs::Shader::load(device.clone()).unwrap();
-        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
+        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
     });
 
     // build denoise compute pipeline
@@ -170,8 +187,13 @@ fn main() {
         // raytracing shader
         use shaders::pre_trace_cs;
 
+        let spec_consts = pre_trace_cs::SpecializationConstants{
+            constant_1 : local_size_x,
+            constant_2 : local_size_y,
+        };
+
         let shader = pre_trace_cs::Shader::load(device.clone()).unwrap();
-        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
+        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
     });
 
     // build denoise compute pipeline
@@ -179,8 +201,13 @@ fn main() {
         // raytracing shader
         use shaders::light_bounce_cs;
 
+        let spec_consts = light_bounce_cs::SpecializationConstants{
+            constant_1 : local_size_x,
+            constant_2 : local_size_y,
+        };
+
         let shader = light_bounce_cs::Shader::load(device.clone()).unwrap();
-        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
+        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
     });
 
     // build denoise compute pipeline
@@ -188,8 +215,13 @@ fn main() {
         // raytracing shader
         use shaders::light_occlude_cs;
 
+        let spec_consts = light_occlude_cs::SpecializationConstants{
+            constant_1 : local_size_x,
+            constant_2 : local_size_y,
+        };
+
         let shader = light_occlude_cs::Shader::load(device.clone()).unwrap();
-        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
+        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
     });
 
     // build denoise compute pipeline
@@ -197,8 +229,13 @@ fn main() {
         // raytracing shader
         use shaders::light_combine_cs;
 
+        let spec_consts = light_combine_cs::SpecializationConstants{
+            constant_1 : local_size_x,
+            constant_2 : local_size_y,
+        };
+
         let shader = light_combine_cs::Shader::load(device.clone()).unwrap();
-        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
+        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
     });
 
     println!("Render Pipeline initialized");
@@ -402,6 +439,8 @@ fn main() {
         max_depth : 10,
         render_dist: 100.0,
         frame_idx : 0,
+        noise_idx : 0,
+        noise_frames : 64,
     };
 
     // let mut reproject_pc = shaders::ReprojectPushConstantData {
@@ -466,7 +505,7 @@ fn main() {
             //sun
             DirectionalLight {
                 direction : [0.0, -1.0, 0.0],
-                color : [1.0, 1.0, 1.0],
+                color : [1.0; 3],
                 _dummy0 : [0;4],
                 _dummy1 : [0;4],
             }
@@ -481,7 +520,7 @@ fn main() {
         let lights = [
             //sun
             SpotLight {
-                direction : [0.0, -1.0, 0.0],
+                direction : [1.0, 0.0, 0.0],
                 position : [0.0; 3],
                 half_angle : 0.0,
                 power : 0.0,
@@ -592,12 +631,19 @@ fn main() {
                     recreate_swapchain = true;
                 }
 
-                render_pc.time = p_start.elapsed().as_secs_f32();
+                let time = p_start.elapsed().as_secs_f32();
+
+                if let Ok(mut wlock) = directional_light_buffer.write() {
+                    wlock[0].direction = [time.sin(), time.cos(), 0.0];
+                }
+
                 // reproject_pc.new_forward = [forward.x, forward.y, forward.z];
                 
                 intersect_pc.camera_forward = [forward.x, forward.y, forward.z];
                 intersect_pc.camera_origin = [position.x, position.y, position.z];
                 intersect_pc.camera_up = [up.x, up.y, up.z];
+                intersect_pc.frame_idx += 1;
+                intersect_pc.noise_idx = thread_rng().gen_range(0,intersect_pc.noise_frames);
                 // reproject_pc.movement = [position.x - old_position.x, position.y - old_position.y, position.z - old_position.z];
                 old_position = position;
 
@@ -682,11 +728,13 @@ fn main() {
                     n_point_lights : 0,
                     n_spot_lights : 0,
                     render_dist : render_pc.render_dist,
-                    max_depth : 6,
+                    max_depth : 8,
                 };
                 
                 let light_occlude_layout = light_occlude_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
                 let light_occlude_set_0 = Arc::new(PersistentDescriptorSet::start(light_occlude_layout.clone())
+                    // material buffer
+                    .add_buffer(material_buffer.clone()).unwrap()
                     // position buffers
                     .add_image(gbuffer.position0_buffer.clone()).unwrap()
                     // light direction buffer
@@ -699,6 +747,8 @@ fn main() {
                     .build().unwrap()
                 );
                 let light_occlude_set_1 = Arc::new(PersistentDescriptorSet::start(light_occlude_layout.clone())
+                    // material buffer
+                    .add_buffer(material_buffer.clone()).unwrap()
                     // position buffers
                     .add_image(gbuffer.position1_buffer.clone()).unwrap()
                     // light direction buffer
@@ -713,16 +763,13 @@ fn main() {
 
                 let light_occlude_pc = shaders::LightOccludePushConstantData {
                     render_dist : render_pc.render_dist,
-                    max_depth : 6,
+                    max_depth : 8,
                 };
 
                 
                 let light_combine_layout = light_combine_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
                 let light_combine_set = Arc::new(PersistentDescriptorSet::start(light_combine_layout.clone())
                     .add_buffer(material_buffer.clone()).unwrap()
-                    .add_buffer(point_light_buffer.clone()).unwrap()
-                    .add_buffer(directional_light_buffer.clone()).unwrap()
-                    .add_buffer(spot_light_buffer.clone()).unwrap()
                     // position buffers
                     .add_image(gbuffer.position0_buffer.clone()).unwrap()
                     .add_image(gbuffer.position1_buffer.clone()).unwrap()
@@ -731,7 +778,7 @@ fn main() {
                     .add_image(gbuffer.normal1_buffer.clone()).unwrap()
                     // depth buffer
                     .add_image(gbuffer.depth_buffer.clone()).unwrap()
-                    // matrial buffers
+                    // material buffers
                     .add_image(gbuffer.material0_buffer.clone()).unwrap()
                     .add_image(gbuffer.material1_buffer.clone()).unwrap()
                     // random seed buffer
@@ -746,6 +793,8 @@ fn main() {
                     .add_image(gbuffer.light1_buffer.clone()).unwrap()
                     // output image
                     .add_image(swapchain_images[image_num].clone()).unwrap()
+                    // temporal buffer
+                    .add_image(gbuffer.temp_buffers[0].clone()).unwrap()
                     // voxel data
                     .add_buffer(svdag_geometry_buffer.clone()).unwrap()
                     .add_buffer(svdag_material_buffer.clone()).unwrap()
@@ -753,29 +802,32 @@ fn main() {
                 );
 
                 let light_combine_pc = shaders::LightCombinePushConstantData {
-                    ambient_light : [0.0; 3],
+                    ambient_light : [0.1; 3],
                     camera_forward : pre_trace_pc.camera_forward,
                     camera_up : pre_trace_pc.camera_up,
                     camera_origin : pre_trace_pc.camera_origin,
+                    frame_idx : intersect_pc.frame_idx,
                     _dummy0:[0;4],
                     _dummy1:[0;4],
                     _dummy2:[0;4],
                 };
 
+                // number of blocks depends on the runtime-computed local_size parameters of the physical device
+                let block_dim_x = (surface_width - 1) / local_size_x + 1;
+                let block_dim_y = (surface_width - 1) / local_size_y + 1;
+
                 // we build a command buffer for this frame
                 // needs to be built each frame because we don't know which swapchain image we will be told to render to
                 // its possible a command buffer could be built for each swapchain ahead of time, but that would add complexity
-                let render_command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap();
-
-                // build the final rendering command buffer
-                let render_command_buffer = render_command_buffer
-                    .dispatch([(gbuffer.pre_trace_width - 1) / 32 + 1, (gbuffer.pre_trace_height - 1) / 32 + 1, 1], pre_trace_compute_pipeline.clone(), pre_trace_set.clone(), pre_trace_pc).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], light_bounce_compute_pipeline.clone(), light_bounce_set.clone(), light_bounce_pc).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_0.clone(), light_occlude_pc).unwrap()
-                    .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_1.clone(), light_occlude_pc).unwrap()
-                    // .dispatch([(surface_width - 1) / 32 + 1, (surface_height - 1) / 32 + 1, 1], light_combine_compute_pipeline.clone(), light_combine_set.clone(), light_combine_pc).unwrap()
-                    .build().unwrap();
+                let mut render_command_buffer_builder = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap();
+                render_command_buffer_builder
+                    .dispatch([(gbuffer.pre_trace_width - 1) / local_size_x + 1, (gbuffer.pre_trace_height - 1) / local_size_y + 1, 1], pre_trace_compute_pipeline.clone(), pre_trace_set.clone(), pre_trace_pc).unwrap()
+                    .dispatch([block_dim_x, block_dim_y, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
+                    .dispatch([block_dim_x, block_dim_y, 1], light_bounce_compute_pipeline.clone(), light_bounce_set.clone(), light_bounce_pc).unwrap()
+                    .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_0.clone(), light_occlude_pc).unwrap()
+                    .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_1.clone(), light_occlude_pc).unwrap()
+                    .dispatch([block_dim_x, block_dim_y, 1], light_combine_compute_pipeline.clone(), light_combine_set.clone(), light_combine_pc).unwrap();
+                let render_command_buffer = render_command_buffer_builder.build().unwrap();
 
                 let future = previous_frame_end.take().unwrap()
                     .join(acquire_future)
@@ -807,7 +859,7 @@ fn main() {
                 frame_counts -= 1;
                 if frame_counts <= 0 {
                     use std::f32::consts::PI;
-                    frame_counts = FRAME_COUNTS;
+                    frame_counts = FRAME_COUNTS / 10;
                     let (t, t_var, fps, _) = fps.stats();
 
                     // print some debug information

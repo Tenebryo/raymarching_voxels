@@ -1,6 +1,7 @@
 #version 450
 
-layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
+// specialization constants for the local sizes
+layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
 layout(r32f, binding = 0) uniform image2D dImage;  // depth
 
 #define VOXEL_BINDING_OFFSET 1

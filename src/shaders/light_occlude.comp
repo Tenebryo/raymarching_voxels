@@ -20,14 +20,15 @@ layout(binding = 0) readonly buffer MaterialData {
     Material materials[];
 };
 
-layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
+// specialization constants for the local sizes
+layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
 // g-buffer information
-layout(rgba32f,  binding = 0) readonly uniform image2D position_buf;
-layout(rgba32f,  binding = 1) readonly uniform image2D ldir_buf;
-layout(rgba32f,  binding = 2) uniform image2D light_buf;
+layout(rgba32f,  binding = 1) readonly uniform image2D position_buf;
+layout(rgba32f,  binding = 2) readonly uniform image2D ldir_buf;
+layout(rgba32f,  binding = 3) uniform image2D light_buf;
 
 // voxel geometry information and functions
-#define VOXEL_BINDING_OFFSET 3
+#define VOXEL_BINDING_OFFSET 4
 #include "voxel.glsl"
 
 layout(push_constant) uniform LightOccludePushConstantData {
@@ -147,9 +148,8 @@ void main() {
         uint iterations;
         uint vid;
 
-        bool hit = voxel_march(p, dir, max_depth, ldist+0.1, dist, incidence, vid, material, ret_code, iterations);
+        bool hit = voxel_march(p + dir * MIN_VOXEL_SIZE, dir, max_depth, ldist+0.1, dist, incidence, vid, material, ret_code, iterations);
 
-        return;
         vec3 light;
 
         if (hit) {

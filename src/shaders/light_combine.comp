@@ -2,6 +2,8 @@
 ///functions that compute a single sample of the lighting function for a pixel
 /// Implements bidirectional path tracing with importance sampling
 
+// specialization constants for the local sizes
+layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
 
 #define PI 3.141592653
 
@@ -40,43 +42,36 @@ layout(binding = 0) readonly buffer MaterialData {
     Material materials[];
 };
 
-// lighting data
-layout(binding = 1) readonly buffer PointLightData{
-    PointLight point_lights[];
-};
-layout(binding = 2) readonly buffer DirectionalLightData{
-    DirectionalLight directional_lights[];
-};
-layout(binding = 3) readonly buffer SpotLightData{
-    SpotLight spots_lights[];
-};
-
-layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 // g-buffer information
-layout(rgba32f,  binding = 4)  readonly uniform image2D position0_buf;
-layout(rgba32f,  binding = 5)  uniform image2D position1_buf;
-layout(rgba32f,  binding = 6)  readonly uniform image2D normal0_buf;
-layout(rgba32f,  binding = 7)  uniform image2D normal1_buf;
-layout(r32f,     binding = 8)  readonly uniform image2D depth_buf;
-layout(r32ui,    binding = 9)  readonly uniform uimage2D material0_buf;
-layout(r32ui,    binding = 10) uniform uimage2D material1_buf;
-layout(rgba32ui, binding = 11) readonly uniform uimage2D rng_seed_buf;
-layout(rgba32ui, binding = 12) uniform uimage2D light_index_buf;
-layout(rgba32f,  binding = 13) uniform image2D ldir0_buf;
-layout(rgba32f,  binding = 14) uniform image2D ldir1_buf;
-layout(rgba32f,  binding = 15) uniform image2D light0_buf;
-layout(rgba32f,  binding = 16) uniform image2D light1_buf;
-layout(rgba32f,  binding = 17) uniform image2D light_buf;
+layout(rgba32f,  binding = 1)  readonly uniform image2D position0_buf;
+layout(rgba32f,  binding = 2)  uniform image2D position1_buf;
+layout(rgba32f,  binding = 3)  readonly uniform image2D normal0_buf;
+layout(rgba32f,  binding = 4)  uniform image2D normal1_buf;
+layout(r32f,     binding = 5)  readonly uniform image2D depth_buf;
+layout(r32ui,    binding = 6)  readonly uniform uimage2D material0_buf;
+layout(r32ui,    binding = 7)  uniform uimage2D material1_buf;
+layout(rgba32ui, binding = 8)  readonly uniform uimage2D rng_seed_buf;
+layout(rgba32ui, binding = 9)  uniform uimage2D light_index_buf;
+layout(rgba32f,  binding = 10) uniform image2D ldir0_buf;
+layout(rgba32f,  binding = 11) uniform image2D ldir1_buf;
+layout(rgba32f,  binding = 12) uniform image2D light0_buf;
+layout(rgba32f,  binding = 13) uniform image2D light1_buf;
+layout(rgba32f,  binding = 14) uniform image2D light_buf;
+layout(rgba32f,  binding = 15) uniform image2D light_prev_buf;
 
 // voxel geometry information and functions
-#define VOXEL_BINDING_OFFSET 18
+#define VOXEL_BINDING_OFFSET 16
 #include "voxel.glsl"
+
+// #define BRDF_BINDING_OFFSET (VOXEL_BINDING_END)
+// #include "brdf.glsl"
 
 layout(push_constant) uniform LightCombinePushConstantData {
     vec3 ambient_light;
     vec3 camera_origin;
     vec3 camera_forward;
     vec3 camera_up;
+    uint frame_idx;
 };
 
 /// calculate the half-angle vector from two incident vectors (normalized)
@@ -175,13 +170,85 @@ void main() {
 
     if (idx.x < size.x && idx.y < size.y) {
 
+        vec4 p0 = imageLoad(position0_buf, idx);
+        vec4 p1 = imageLoad(position1_buf, idx);
+        
+        vec4 n0 = imageLoad(normal0_buf, idx);
+        vec4 n1 = imageLoad(normal1_buf, idx);
+
+        vec3 l0 = imageLoad(light0_buf, idx).xyz;
+        vec3 l1 = imageLoad(light1_buf, idx).xyz;
+
+        vec4 ld0 = imageLoad(ldir0_buf, idx);
+        vec4 ld1 = imageLoad(ldir1_buf, idx);
+
+        uint m0 = imageLoad(material0_buf, idx).x;
+        uint m1 = imageLoad(material1_buf, idx).x;
+
 
         vec3 light = vec3(0);
 
-        light = imageLoad(normal0_buf, idx).xyz;
+        if (p0.w > 0.5) {
+            // check if there is a contribution from the first intersection
+            
+            light += ambient_light;
 
+            vec3 r0 = camera_origin - p0.xyz;
 
-        imageStore(light_buf, idx, vec4(light, 1.0));
+            float d0 = length(r0);
+
+            float rdd0 = 1/(d0 * d0);
+
+            r0 = normalize(r0);
+
+            // calculate the half angle of the first light reflection
+            vec3 h0 = normalize(r0 + ld0.xyz);
+
+            // contribution from the emission of the voxel
+            light += materials[m0].emission * (rdd0 * max(0, dot(n0.xyz, r0)));
+
+            // contribution of the light bounce from the first ray intersection
+            float brdf_weight_0 = dot(n0.xyz, h0); // PLACEHOLDER for brdf(out=r0,in=ldir0)
+            light += l0 * (brdf_weight_0 * rdd0);
+
+            if (p1.w > 0.5) {
+                vec3 r1 = p0.xyz - p1.xyz;
+
+                float d1 = length(r1);
+
+                float rdd1 = 1 / (d1 * d1);
+
+                r1 = normalize(r1);
+
+                // calculate half angle for second light reflection
+                vec3 h1 = normalize(r1 + ld1.xyz);
+
+                float brdf_weight_10 = 1.0; // PLACEHOLDER for brdf(out=r0,in=-r1) (actually, due to importance sampling used for the bounce direction, this will always be 1)
+                float brdf_weight_1 = dot(n1.xyz, h1); // PLACEHOLDER for brdf(out=r1,in=ldir1)
+
+                // contribution of material emission from the second ray intersection
+                light +=  materials[m1].emission * (brdf_weight_10 * rdd0 * rdd1 * max(0, dot(n1.xyz, r1)));
+
+                // contribution of light bounce from the second ray intersection
+                light += l1 * (brdf_weight_10 * brdf_weight_1 * rdd0 * rdd1);
+
+                // light = r1;
+            }
+
+            // light = ambient_light + l0 * rdd0 * brdf_weight_0;
+        }
+        
+        vec3 prev_light = imageLoad(light_prev_buf, idx).xyz;
+
+        prev_light = min(vec3(1), max(vec3(0), prev_light));
+        // light = min(vec3(1), light);
+        // light = vec3(light.r);
+
+        // vec4 light_val = vec4(mix(light, prev_light, 0.99), 1.0);
+        vec4 light_val = vec4(light, 1.0);
+
+        imageStore(light_buf, idx, light_val);
+        imageStore(light_prev_buf, idx, light_val);
 
     }
 }
