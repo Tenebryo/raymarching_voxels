@@ -261,7 +261,9 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
     while (iterations < 512) {
         iterations += 1;
 
-        vec2 tc = project_cube(id, od, pos, pos + scale, incidence_min, incidence);
+        uint new_incidence;
+
+        vec2 tc = project_cube(id, od, pos, pos + scale, incidence_min, new_incidence);
 
         if (voxel_valid_bit(parent, dmask ^ idx) && interval_nonempty(t)) {
 
@@ -306,6 +308,8 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
                 continue;
             }
         }
+
+        incidence = new_incidence;
 
         // advance
         t.x = tc.y;

@@ -208,7 +208,7 @@ void main() {
             light += materials[m0].emission * (rdd0 * max(0, dot(n0.xyz, r0)));
 
             // contribution of the light bounce from the first ray intersection
-            float brdf_weight_0 = dot(n0.xyz, h0); // PLACEHOLDER for brdf(out=r0,in=ldir0)
+            float brdf_weight_0 = max(0, dot(n0.xyz, h0)); // PLACEHOLDER for brdf(out=r0,in=ldir0)
             light += l0 * (brdf_weight_0 * rdd0);
 
             if (p1.w > 0.5) {
@@ -224,7 +224,7 @@ void main() {
                 vec3 h1 = normalize(r1 + ld1.xyz);
 
                 float brdf_weight_10 = 1.0; // PLACEHOLDER for brdf(out=r0,in=-r1) (actually, due to importance sampling used for the bounce direction, this will always be 1)
-                float brdf_weight_1 = dot(n1.xyz, h1); // PLACEHOLDER for brdf(out=r1,in=ldir1)
+                float brdf_weight_1 = max(0, dot(n1.xyz, h1)); // PLACEHOLDER for brdf(out=r1,in=ldir1)
 
                 // contribution of material emission from the second ray intersection
                 light +=  materials[m1].emission * (brdf_weight_10 * rdd0 * rdd1 * max(0, dot(n1.xyz, r1)));
@@ -235,7 +235,8 @@ void main() {
                 // light = r1;
             }
 
-            // light = ambient_light + l0 * rdd0 * brdf_weight_0;
+            light = ambient_light + (l0 * rdd0 * brdf_weight_0);
+            // light = ambient_light;
         }
         
         vec3 prev_light = imageLoad(light_prev_buf, idx).xyz;

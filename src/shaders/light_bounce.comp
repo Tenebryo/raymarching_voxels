@@ -193,26 +193,14 @@ void main() {
 
         // generate some pseudo random numbers
         vec3 rv0 = halton_sequence3(s.x, uvec3(2,3,5));
-        vec3 rv1 = halton_sequence3(s.x + 1000007, uvec3(2,3,5));
+        vec3 rv1 = halton_sequence3(s.y, uvec3(2,3,5));
 
-        uint li, vmat_1;
-        vec3 ldir0, ldir1;
-        vec4 p1, light0, light1, norm1;
-        float ldist0, ldist1;
+        uint li = 0, vmat_1 = 0;
+        vec3 ldir0 = vec3(0), ldir1 = vec3(0);
+        vec4 p1 = vec4(0), light0 = vec4(0), light1 = vec4(0), norm1 = vec4(0);
+        float ldist0 = 0, ldist1 = 0;
 
-        if (d.x > render_dist) {
-            // render skybox if there isn't an intersection
-            li = 0;
-            vmat_1 = 0;
-            ldir0 = vec3(0);
-            ldir1 = vec3(0);
-            p1 = vec4(0);
-            light0 = vec4(0);
-            light1 = vec4(0);
-            norm1 = vec4(0);
-            ldist0 = 0;
-            ldist1 = 0;
-        } else {
+        if (p.w > 0.5) {
             
             p1.w = 1.0;
             norm1.w = 1.0;
@@ -220,12 +208,15 @@ void main() {
             light1.w = 1.0;
             // sample 1 bounces from brdf (6 random numbers)
 
-            vec2 o_angles_0 = incident_angles_from_vector(n.xyz, n.zxy, out_0);
+            // vec2 o_angles_0 = incident_angles_from_vector(n.xyz, n.zxy, out_0);
             // vec2 i_angles_0 = sample_brdf(materials[m.x].brdf, o_angles_0.x, o_angles_0.y, rv0.x, rv0.y, rv0.z);
             vec2 i_angles_0 = sample_hemisphere(rv0.x, rv0.y);
-            vec3 in_0 = vector_from_incident_angles(n.xyz, n.zxy, i_angles_0.x, i_angles_0.y);
+            vec3 h_0 = vector_from_incident_angles(n.xyz, n.zxy, i_angles_0.x, i_angles_0.y);
 
-            in_0 = calculate_incident_from_half_angle(out_0, in_0);
+            // h_0 = n.xyz;
+            h_0 = normalize(4 * n.xyz + h_0);
+
+            vec3 in_0 = calculate_incident_from_half_angle(out_0, h_0);
 
             vec3 p0 = p.xyz;
 
@@ -238,7 +229,7 @@ void main() {
             // raytrace to the next intersection
             bool hit = voxel_march(p0 + in_0 * MIN_VOXEL_SIZE, in_0, max_depth, render_dist, dist, incidence, vox_id, vmat_1, code, iterations);
 
-            p1.xyz = p0 + in_0 * dist;
+            p1.xyz = p0 + in_0 * (dist + MIN_VOXEL_SIZE);
             norm1.xyz = INCIDENCE_NORMAL_VECTORS[incidence];
 
             // sample lighting to the two points:
@@ -312,8 +303,11 @@ void main() {
                 ldist1 = 0;
                 light1 = vec4(0);
                 ldir1 = vec3(0);
-                p1=vec4(0);
+                p1 = vec4(0);
+                norm1 = vec4(0);
             }
+
+            ldir1 = in_0;
         }
 
 

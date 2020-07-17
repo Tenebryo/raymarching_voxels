@@ -13,7 +13,7 @@ use timing::Timing;
 use gbuffer::GBuffer;
 
 use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer};
-use vulkano::command_buffer::{AutoCommandBufferBuilder, DynamicState, sys::{UnsafeCommandBufferBuilder, Kind, Flags}, pool::StandardCommandPool};
+use vulkano::command_buffer::{StateCacher, AutoCommandBufferBuilder, DynamicState, sys::{UnsafeCommandBufferBuilderPipelineBarrier, UnsafeCommandBufferBuilder, Kind, Flags}, pool::StandardCommandPool};
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use vulkano::descriptor::PipelineLayoutAbstract;
 use vulkano::device::{Device, DeviceExtensions};
@@ -103,6 +103,8 @@ fn main() {
     // Since we can request multiple queues, the `queues` variable is in fact an iterator. In this
     // example we use only one queue, so we just retrieve the first and only element of the
     // iterator and throw it away.
+
+    let cmd_pool = Arc::new(StandardCommandPool::new(device.clone(), compute_queue_family.clone()));
 
     let compute_queue = queues.next().unwrap();
     let graphics_queue = queues.next().unwrap();
@@ -244,7 +246,7 @@ fn main() {
 
     let timestamp_command_pool = Arc::new(StandardCommandPool::new(device.clone(), compute_queue.family()));
 
-    
+
     //*************************************************************************************************************************************
     // Screen Buffer Allocation
     //*************************************************************************************************************************************
@@ -763,6 +765,7 @@ fn main() {
 
                 let light_occlude_pc = shaders::LightOccludePushConstantData {
                     render_dist : render_pc.render_dist,
+                    num_materials : 2,
                     max_depth : 8,
                 };
 
@@ -802,7 +805,7 @@ fn main() {
                 );
 
                 let light_combine_pc = shaders::LightCombinePushConstantData {
-                    ambient_light : [0.1; 3],
+                    ambient_light : [0.02; 3],
                     camera_forward : pre_trace_pc.camera_forward,
                     camera_up : pre_trace_pc.camera_up,
                     camera_origin : pre_trace_pc.camera_origin,
@@ -819,19 +822,34 @@ fn main() {
                 // we build a command buffer for this frame
                 // needs to be built each frame because we don't know which swapchain image we will be told to render to
                 // its possible a command buffer could be built for each swapchain ahead of time, but that would add complexity
+                // let mut render_command_buffer_builder = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap();
+
+                // render_command_buffer_builder
+                //     .dispatch([(gbuffer.pre_trace_width - 1) / local_size_x + 1, (gbuffer.pre_trace_height - 1) / local_size_y + 1, 1], pre_trace_compute_pipeline.clone(), pre_trace_set.clone(), pre_trace_pc).unwrap()
+                //     .dispatch([block_dim_x, block_dim_y, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
+                //     .dispatch([block_dim_x, block_dim_y, 1], light_bounce_compute_pipeline.clone(), light_bounce_set.clone(), light_bounce_pc).unwrap()
+                //     .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_0.clone(), light_occlude_pc).unwrap()
+                //     .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_1.clone(), light_occlude_pc).unwrap()
+                //     .dispatch([block_dim_x, block_dim_y, 1], light_combine_compute_pipeline.clone(), light_combine_set.clone(), light_combine_pc).unwrap();
+
+                // let render_command_buffer = render_command_buffer_builder.build().unwrap();
+
                 let mut render_command_buffer_builder = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap();
+
                 render_command_buffer_builder
                     .dispatch([(gbuffer.pre_trace_width - 1) / local_size_x + 1, (gbuffer.pre_trace_height - 1) / local_size_y + 1, 1], pre_trace_compute_pipeline.clone(), pre_trace_set.clone(), pre_trace_pc).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], light_bounce_compute_pipeline.clone(), light_bounce_set.clone(), light_bounce_pc).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_0.clone(), light_occlude_pc).unwrap()
-                    .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_1.clone(), light_occlude_pc).unwrap()
+                    // .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_1.clone(), light_occlude_pc).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], light_combine_compute_pipeline.clone(), light_combine_set.clone(), light_combine_pc).unwrap();
+
                 let render_command_buffer = render_command_buffer_builder.build().unwrap();
+
 
                 let future = previous_frame_end.take().unwrap()
                     .join(acquire_future)
-                    // rendering is done in a compute shader
+                    // rendering is done in a series of compute shader commands
                     .then_execute(compute_queue.clone(), render_command_buffer).unwrap()
                     // present the frame when rendering is complete
                     .then_swapchain_present(compute_queue.clone(), swapchain.clone(), image_num)

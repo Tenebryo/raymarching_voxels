@@ -4,13 +4,13 @@
 // specialization constants for the local sizes
 layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
 
-layout(r32f, binding = 0) uniform image2D initialDepthImage;  // depth
+layout(r32f, binding = 0) readonly uniform image2D initialDepthImage;  // depth
 layout(rgba32f, binding = 1) uniform image2D nImage;  // normal
 layout(rgba32f, binding = 2) uniform image2D pImage;  // world position
 layout(r32f, binding = 3) uniform image2D dImage;  // depth
 layout(r32ui, binding = 4) uniform uimage2D mImage;   // material index
 layout(rgba32ui, binding = 5) uniform uimage2D sImage;   // random seed index
-layout(binding = 6) uniform sampler3D blue_noise;   // random seed index
+layout(binding = 6) uniform sampler3D blue_noise;   // random noise
 
 #define VOXEL_BINDING_OFFSET 7
 #include "voxel.glsl"
@@ -118,7 +118,7 @@ void main() {
         } else {
             imageStore(nImage, idx, vec4(0.0));
             imageStore(dImage, idx, vec4(render_dist+1));
-            imageStore(pImage, idx, vec4(camera_origin + ray_dir * render_dist, 0.0));
+            imageStore(pImage, idx, vec4(0.0));
             imageStore(mImage, idx, uvec4(0));
             imageStore(sImage, idx, uvec4(noise_value * noise_scale));
             // imageStore(sImage, idx, uvec4(frame_idx + seed_shift_0, mod(frame_idx + seed_shift_1 + 761, 1000007), 0, 0));
