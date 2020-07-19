@@ -30,8 +30,8 @@ pub struct BRDF {
 }
 
 impl BRDF {
-    /// creates a Phong BRDF, then computes the factored form for the
-    pub fn phong_brdf(ks : f32, kd : f32, ka : f32, a : f32, shape : [usize;4], j : usize, k : usize) -> Self {
+    /// creates a Phong BRDF, then computes the factored form
+    pub fn phong_brdf(ks : f32, kd : f32, _ka : f32, a : f32, shape : [usize;4], j : usize, k : usize) -> Self {
         let mut sampled_data = Vec::with_capacity(shape[0] * shape[1] * shape[2] * shape[3]);
 
         for theta_out_i in 0..shape[0] {

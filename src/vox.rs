@@ -240,7 +240,12 @@ impl VoxelChunk {
         for j in 0..8 {
             let sv = v.sub_voxels[j];
             let m = if sv > 0 {
-                self.recurse_calculate_lod_materials(sv as usize -1)
+                let id = sv as usize -1;
+                if self.lod_materials[id] == std::u32::MAX {
+                    self.recurse_calculate_lod_materials(id)
+                } else {
+                    self.lod_materials[id]
+                }
             } else if sv == 0 {
                 0
             } else {
@@ -267,7 +272,7 @@ impl VoxelChunk {
 
     /// traverse the voxel data and determine the proper material to display for an LOD
     pub fn calculate_lod_materials(&mut self) {
-        self.lod_materials = self.voxels.iter().map(|_| 0).collect::<Vec<u32>>();
+        self.lod_materials = self.voxels.iter().map(|_| std::u32::MAX).collect::<Vec<u32>>();
         self.recurse_calculate_lod_materials(0);
     }
 }

@@ -267,7 +267,7 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
 
         if (voxel_valid_bit(parent, dmask ^ idx) && interval_nonempty(t)) {
 
-            if (scale <= tc.x * 0.005 || depth >= max_depth) {
+            if (scale <= tc.x * 0.002 || depth >= max_depth) {
                 // voxel is too small
                 dist = t.x / MAX_SCALE;
                 return_state = depth >= max_depth ? VOXEL_MARCH_MAX_DEPTH : VOXEL_MARCH_LOD;

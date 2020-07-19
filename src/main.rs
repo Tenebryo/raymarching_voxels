@@ -400,21 +400,6 @@ fn main() {
     let mut pitch = 0.0;
     let mut yaw = 0.0;
 
-    let mut render_pc = shaders::RenderPushConstantData {
-        cam_o : [0.0, 0.0, 0.0],
-        cam_f : [0.0, 0.0, 1.0],
-        cam_u : [0.0, 1.0, 0.0],
-        vdim : [256, 256, 128],
-        render_dist : 1064.0,
-        time : p_start.elapsed().as_secs_f32(),
-        gamma : 1.0,
-        n_point_lights: 1,
-
-        // dummy variables for alignment
-        // _dummy0 : [0;4],
-        // _dummy1 : [0;4],
-    };
-
     let _denoise_pc = shaders::DenoisePushConstantData {
         c_phi : 0.05,
         n_phi : 64.0,
@@ -426,7 +411,7 @@ fn main() {
         camera_origin : [position.x, position.y, position.z],
         camera_forward : [forward.x, forward.y, forward.z],
         camera_up : [up.x, up.y, up.z],
-        max_depth : 10,
+        max_depth : 16,
         render_dist: 100.0,
         frame_idx : 0,
         noise_idx : 0,
@@ -458,6 +443,8 @@ fn main() {
 
     svdag_geometry_data.multiply_root_by_8();
     svdag_geometry_data.multiply_root_by_8();
+    svdag_geometry_data.multiply_root_by_8();
+    svdag_geometry_data.multiply_root_by_8();
 
     // calculate the lod materials
     svdag_geometry_data.calculate_lod_materials();
@@ -472,7 +459,7 @@ fn main() {
     };
 
 
-    println!("Voxel Data initialized");
+    println!("Voxel Data iniitialized");
 
     // create a list of point lights to render
     let point_light_buffer = {
@@ -665,7 +652,7 @@ fn main() {
                     camera_forward : intersect_pc.camera_forward,
                     camera_origin : intersect_pc.camera_origin,
                     camera_up : intersect_pc.camera_up,
-                    max_depth : 4,
+                    max_depth : 5,
 
                     _dummy0 : [0;4],
                     _dummy1 : [0;4],
@@ -721,7 +708,7 @@ fn main() {
                     n_directional_lights : 1,
                     n_point_lights : 0,
                     n_spot_lights : 0,
-                    render_dist : render_pc.render_dist,
+                    render_dist : intersect_pc.render_dist,
                     max_depth : 8,
                 };
                 
@@ -756,7 +743,7 @@ fn main() {
                 );
 
                 let light_occlude_pc = shaders::LightOccludePushConstantData {
-                    render_dist : render_pc.render_dist,
+                    render_dist : intersect_pc.render_dist,
                     num_materials : 2,
                     max_depth : 8,
                 };
@@ -937,9 +924,6 @@ fn main() {
             } else if input.scroll_diff() > 0.0 && intersect_pc.max_depth < 15 {
                 intersect_pc.max_depth += 1;
             }
-
-            render_pc.cam_o = [position.x, position.y, position.z];
-            render_pc.cam_f = [forward.x, forward.y, forward.z];
 
             
             if input.key_held(VirtualKeyCode::Escape) {*control_flow = ControlFlow::Exit;}

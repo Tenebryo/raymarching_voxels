@@ -1,10 +1,3 @@
-pub mod render_cs {
-    vulkano_shaders::shader!{
-        ty: "compute",
-        path: "src/shaders/render.comp",
-    }
-}
-
 pub mod update_cs {
     vulkano_shaders::shader!{
         ty: "compute",
@@ -74,7 +67,6 @@ pub mod light_combine_cs {
 }
 
 // Push Constant Types
-pub use render_cs::ty::RenderPushConstantData;
 pub use update_cs::ty::UpdatePushConstantData;
 pub use denoise_cs::ty::DenoisePushConstantData;
 pub use reproject_cs::ty::ReprojectPushConstantData;
