@@ -73,22 +73,6 @@ pub mod light_combine_cs {
     }
 }
 
-pub mod voxel_cache_update_cs {
-    vulkano_shaders::shader!{
-        ty: "compute",
-        path: "src/shaders/voxel_cache_update.comp",
-        include: ["src/shaders/"],
-    }
-}
-
-pub mod voxel_raycast_cs {
-    vulkano_shaders::shader!{
-        ty: "compute",
-        path: "src/shaders/voxel_raycast.comp",
-        include: ["src/shaders/"],
-    }
-}
-
 // Push Constant Types
 pub use render_cs::ty::RenderPushConstantData;
 pub use update_cs::ty::UpdatePushConstantData;
@@ -99,9 +83,6 @@ pub use pre_trace_cs::ty::PreTracePushConstants;
 pub use light_bounce_cs::ty::LightBouncePushConstantData;
 pub use light_occlude_cs::ty::LightOccludePushConstantData;
 pub use light_combine_cs::ty::LightCombinePushConstantData;
-
-pub use voxel_cache_update_cs::ty::VoxelCachePushConstants;
-pub use voxel_cache_update_cs::ty::VChunkDescriptor;
 
 // Graphics Primitive Types
 // pub use light_bounce_cs::ty::BRDF;
