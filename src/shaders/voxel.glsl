@@ -223,7 +223,7 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
     vec3 id = 1.0 / d;
     vec3 od = - o * id;
 
-    vec2 t = vec2(0,MAX_SCALE * 100);
+    vec2 t = vec2(0,MAX_SCALE * max_dist);
 
     float h = t.y;
 

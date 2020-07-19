@@ -212,6 +212,25 @@ impl VoxelChunk {
         Self {voxels,lod_materials : vec![]}
     }
 
+    pub fn shift_indexes(&mut self, s : usize) {
+        for i in 0..(self.voxels.len()) {
+            for j in 0..8 {
+                // check that it is a subvoxel
+                if self.voxels[i].sub_voxels[j] > 0 {
+                    // permute the subvoxel index
+                    self.voxels[i].sub_voxels[j] += s as i32;
+                }
+            }
+        }
+    }
+
+    pub fn multiply_root_by_8(&mut self) {
+        self.shift_indexes(1);
+        self.voxels.insert(0, VChildDescriptor{
+            sub_voxels : [2; 8]
+        });
+    }
+
     /// recursive helper function to calculate the most common material from each voxel's subvoxels
     fn recurse_calculate_lod_materials(&mut self, i : usize) -> u32 {
         let v = self.voxels[i];

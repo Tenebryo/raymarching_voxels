@@ -1,0 +1,219 @@
+#version 450
+
+// #################################################################################################
+// #################################################################################################
+// Struct Definitions
+// #################################################################################################
+// #################################################################################################
+
+struct VChunkDescriptor {
+    // offset of the position of the chunk as a multiple of the size
+    ivec3 position;
+    // the side length of the side of the chunk, log_2
+    int log_size;
+    // index of the root node of the voxel chunk
+    uint root;
+    // flag this chunk to be updated in the cache
+    bool update;
+};
+
+struct VChildDescriptor {
+    // if a sub-DAG: positive 1-index pointers to children
+    // if a leaf: negative voxel material id
+    // if empty: 0
+    int sub_voxels[8];
+};
+
+// #################################################################################################
+// #################################################################################################
+// Data Bindings
+// #################################################################################################
+// #################################################################################################
+
+layout(constant_id = 0) const uint VSIZE = 512;
+layout(constant_id = 1) const uint NLOD = 5;
+
+const uint VSIZE_H = VSIZE / 2;
+const uint VSIZE_Q = VSIZE / 4;
+
+// may be tradeoff between coalesced memory access and thread divergence
+layout(local_size_x_id = 2, local_size_y_id = 3, local_size_z_id = 4) in;
+
+layout (binding = 0) buffer VoxelCacheData {
+    // lod cascaded voxel material cache
+    // lod[0] := the highest detail 
+    // cache size = VSIZE * VSIZE * VSIZE * NLOD
+    uint vcache[];
+};
+
+layout(binding = 1) readonly buffer VChunkData {
+    VChunkDescriptor chunks[];
+};
+
+layout(binding = 2) readonly buffer VChildData {
+    VChildDescriptor voxels[];
+};
+
+layout(binding = 3) readonly buffer VMaterialData {
+    uint lod_materials[];
+};
+
+layout(push_constant) readonly uniform VoxelCachePushConstants {
+    // voxel coordinate of the camera
+    ivec3 camera_origin;
+    // number of voxel chunks
+    uint nchunks;
+    // voxel coordinate of the camera from previous update
+    ivec3 index_offset;
+};
+
+
+// #################################################################################################
+// #################################################################################################
+// Helper functions
+// #################################################################################################
+// #################################################################################################
+
+
+/// compute the index of 
+uint cache_index(int lod, ivec3 idx) {
+    return idx.x + VSIZE * (idx.y + VSIZE * (idx.z + VSIZE * lod));
+}
+
+bool voxel_valid_bit(uint parent, uint idx) {
+    return voxels[parent].sub_voxels[idx] != 0;
+}
+
+bool voxel_child_bit(uint parent, uint idx, out uint child) {
+    child = voxels[parent].sub_voxels[idx];
+    return child > 0;
+}
+
+bool voxel_leaf_bit(uint parent, uint idx) {
+    return voxels[parent].sub_voxels[idx] < 0;
+}
+
+bool voxel_empty(uint parent, uint idx) {
+    return voxels[parent].sub_voxels[idx] == 0;
+}
+
+uint voxel_get_child(uint parent, uint idx) {
+    return voxels[parent].sub_voxels[idx] - 1;
+}
+
+uint voxel_get_material(uint parent, uint idx) {
+    return -voxels[parent].sub_voxels[idx];
+}
+
+uint voxel_get_lod_material(uint idx) {
+    return lod_materials[idx];
+}
+
+uint voxel_chunk_lookup_index_material(VChunkDescriptor vchunk, ivec3 index, uint depth) {
+
+    uint voxel = vchunk.root;
+
+    // divergence will happen here based on voxel structure
+    for (uint mask = 1 << (depth - 1); mask != 0; mask >>= 1) {
+        bool xbit = (index.x & mask) != 0;
+        bool ybit = (index.y & mask) != 0;
+        bool zbit = (index.z & mask) != 0;
+
+        // child index
+        uint cidx = (xbit ? 0x4 : 0x0) | (ybit ? 0x2 : 0x0) | (zbit ? 0x1 : 0x0);
+
+        uint child = voxel;
+        bool is_child = voxel_child_bit(voxel, cidx, child);
+
+        if (is_child) {
+            // child
+            voxel = child;
+        } else {
+            // leaf or air
+            return voxel_get_material(voxel, cidx);
+        }
+    }
+
+    return voxel_get_lod_material(voxel);
+}
+
+// #################################################################################################
+// #################################################################################################
+// Main function
+// #################################################################################################
+// #################################################################################################
+
+void main() {
+    ivec3 idx = ivec3(
+        gl_GlobalInvocationID.x,
+        gl_GlobalInvocationID.y,
+        gl_GlobalInvocationID.z
+    );
+
+    idx += index_offset;
+    
+    if (idx.x < VSIZE && idx.y < VSIZE && idx.z < VSIZE) {
+        bool x_center = (idx.x >= VSIZE_Q) && (idx.x < (VSIZE_Q + VSIZE_H));
+        bool y_center = (idx.y >= VSIZE_Q) && (idx.y < (VSIZE_Q + VSIZE_H));
+        bool z_center = (idx.z >= VSIZE_Q) && (idx.z < (VSIZE_Q + VSIZE_H));
+
+        uint max_lod = NLOD;
+        // if we choose local_size_* to be powers of 2 (less than VSIZE/4), this should 
+        if (x_center && y_center && z_center) {
+            // for lod > 0, the center 256x256x256 is not populated (~1/8 of the data) 
+            max_lod = 1;
+        }
+
+        // TODO: experimentally determine the faster order of these loops
+        // no divergence
+
+        for (int lod = 0; lod < max_lod; lod++) {
+            
+            // calculate the index in the cache for each lod
+            uint index = cache_index(lod, idx);
+            // no divergence
+            for (int c = 0; c < nchunks; c++) {
+
+                VChunkDescriptor cdesc = chunks[c];
+
+                // not divergent
+                if (!cdesc.update) {
+                    // the chunk doesn't need to be updated.
+                    continue;
+                }
+
+                // not divergent
+                if (cdesc.log_size < lod) {
+                    // the chunk is smaller than the lod voxel size
+                    continue;
+                }
+                
+                int chunk_size_lod_log = cdesc.log_size - lod;
+
+                // calculate the size of the chunk in the current lod voxel size
+                int chunk_size_lod = 1 << chunk_size_lod_log;
+
+                // the position of the chunk in the scale of the 
+                ivec3 c_lod_pos = chunk_size_lod * cdesc.position;
+
+                ivec3 thread_position = idx - c_lod_pos;
+
+                bool x_intersects = thread_position.x >= 0 && thread_position.x < chunk_size_lod;
+                bool y_intersects = thread_position.y >= 0 && thread_position.y < chunk_size_lod;
+                bool z_intersects = thread_position.z >= 0 && thread_position.z < chunk_size_lod;
+
+                // maybe diverges (depending on localsize parameters)
+                if (!(x_intersects && y_intersects && z_intersects)) {
+                    // the chunk does not intersect the position of this thread.
+                    continue;
+                }
+
+                // lookup the material (or lod material) of the voxel at a certain 
+                uint material = voxel_chunk_lookup_index_material(cdesc, thread_position, chunk_size_lod_log);
+
+                // store the material in the cache
+                vcache[index] = material;
+            }
+        }
+    }
+}

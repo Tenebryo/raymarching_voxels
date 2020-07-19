@@ -39,7 +39,7 @@ layout(push_constant) uniform LightOccludePushConstantData {
 
 const vec3 INCIDENCE_NORMAL_VECTORS[3] = {vec3(1,0,0), vec3(0,1,0), vec3(0,0,1)};
 
-/// do multiple importance path tracing with 
+/// cause indirect lighting to occlude if it intersects voxel geometry
 void main() {
     ivec2 idx = ivec2(
         gl_GlobalInvocationID.x,
@@ -67,14 +67,16 @@ void main() {
 
         bool hit = voxel_march(p + dir * MIN_VOXEL_SIZE, dir, max_depth, ldist+0.1, dist, incidence, vid, material, ret_code, iterations);
 
+        dist += MIN_VOXEL_SIZE;
+
         vec4 light = imageLoad(light_buf, idx);
 
         if (hit && material < num_materials) {
+            float rdd = 1 / (dist * dist);
             // if we collide with a voxel in the path to the light, at least contribute it's emission value
-            // TODO: ensure the material is available, for now we just use the sole solid material
             light = vec4(materials[material].emission * max(0,dot(INCIDENCE_NORMAL_VECTORS[incidence], -dir)), 1.0);
-            // imageStore(light_buf, idx, vec4(materials[material].emission * dot(INCIDENCE_NORMAL_VECTORS[incidence], -dir), 1.0));
         } else if (hit) {
+            // wrong material reference, we assume no material emission
             light = vec4(0,0,0,1);
         }
         // otherwise, we keep the light value from the light, which was set from the bounce shader

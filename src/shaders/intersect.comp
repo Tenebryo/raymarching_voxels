@@ -26,22 +26,6 @@ layout(push_constant) uniform IntersectPushConstants {
     uint noise_frames;
 };
 
-const vec3 colors[5] = {
-    vec3(0xDC / float(0xFF), 0xE0 / float(0xFF), 0xD9 / float(0xFF)),
-    vec3(0x31 / float(0xFF), 0x08 / float(0xFF), 0x1F / float(0xFF)),
-    vec3(0x6B / float(0xFF), 0x0F / float(0xFF), 0x1A / float(0xFF)),
-    vec3(0x59 / float(0xFF), 0x59 / float(0xFF), 0x59 / float(0xFF)),
-    vec3(0x80 / float(0xFF), 0x8F / float(0xFF), 0x85 / float(0xFF))
-};
-
-
-const vec3 colors8[8] = {
-    vec3(0.5, 0.0, 0.0), vec3(1.0, 0.0, 0.0),
-    vec3(0.0, 0.5, 0.0), vec3(0.0, 1.0, 0.0),
-    vec3(0.0, 0.0, 0.5), vec3(0.0, 0.0, 1.0),
-    vec3(0.5, 0.5, 0.0), vec3(1.0, 1.0, 0.0),
-};
-
 const vec3 INCIDENCE_NORMAL_VECTORS[3] = {vec3(1,0,0), vec3(0,1,0), vec3(0,0,1)};
 
 void main() {

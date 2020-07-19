@@ -189,7 +189,7 @@ void main() {
         uvec4 m = imageLoad(material0_buf, idx);
         uvec4 s = imageLoad(rng_seed_buf, idx);
 
-        vec3 out_0 = camera_origin - p.xyz;
+        vec3 out_0 = normalize(camera_origin - p.xyz);
 
         // generate some pseudo random numbers
         vec3 rv0 = halton_sequence3(s.x, uvec3(2,3,5));
@@ -202,10 +202,6 @@ void main() {
 
         if (p.w > 0.5) {
             
-            p1.w = 1.0;
-            norm1.w = 1.0;
-            light0.w = 1.0;
-            light1.w = 1.0;
             // sample 1 bounces from brdf (6 random numbers)
 
             // vec2 o_angles_0 = incident_angles_from_vector(n.xyz, n.zxy, out_0);
@@ -216,7 +212,8 @@ void main() {
             // h_0 = n.xyz;
             h_0 = normalize(4 * n.xyz + h_0);
 
-            vec3 in_0 = calculate_incident_from_half_angle(out_0, h_0);
+            // vec3 in_0 = calculate_incident_from_half_angle(out_0, h_0);
+            vec3 in_0 = out_0;
 
             vec3 p0 = p.xyz;
 
@@ -227,10 +224,16 @@ void main() {
             uint iterations;
 
             // raytrace to the next intersection
-            bool hit = voxel_march(p0 + in_0 * MIN_VOXEL_SIZE, in_0, max_depth, render_dist, dist, incidence, vox_id, vmat_1, code, iterations);
+            bool hit = voxel_march(p0 + in_0 * (1.0 / 512), in_0, max_depth, render_dist, dist, incidence, vox_id, vmat_1, code, iterations);
 
-            p1.xyz = p0 + in_0 * (dist + MIN_VOXEL_SIZE);
-            norm1.xyz = INCIDENCE_NORMAL_VECTORS[incidence];
+            if (hit) {
+                p1.w = 1.0;
+                norm1.w = 1.0;
+                light0.w = 1.0;
+                light1.w = 1.0;
+                p1.xyz = p0 + in_0 * (dist + (1.0 / 512));
+                norm1.xyz = INCIDENCE_NORMAL_VECTORS[incidence];
+            }
 
             // sample lighting to the two points:
             // * choose a random light and sample a point from the light surface
@@ -250,52 +253,44 @@ void main() {
                 }
             }
 
-            // calculate light type-dependent values separately 
+            // calculate light-type dependent values separately 
             // TODO: stochastic sample from light source
-            switch (l_type) {
-                case 0:
-                    // directional light
-                    ldir0 = directional_lights[li].direction;
-                    ldir1 = directional_lights[li].direction;
+            if (l_type == 0) {
+                // directional light
+                ldir0 = directional_lights[li].direction;
+                ldir1 = directional_lights[li].direction;
 
-                    ldist0 = render_dist;
-                    ldist1 = render_dist;
+                ldist0 = render_dist;
+                ldist1 = render_dist;
 
-                    light0.xyz = directional_lights[li].color;
-                    light1 = light0;
-                    break;
-                case 1:
-                    // point light. for now assume perfect point lights
-                    ldir0 = point_lights[li].position - p0;
-                    ldir1 = point_lights[li].position - p1.xyz;
-                    
-                    ldist0 = length(ldir0);
-                    ldist1 = length(ldir1);
+                light0.xyz = directional_lights[li].color;
+                light1 = light0;
+            } else if (l_type == 1) {
+                // point light. for now assume perfect point lights
+                ldir0 = point_lights[li].position - p0;
+                ldir1 = point_lights[li].position - p1.xyz;
+                
+                ldist0 = length(ldir0);
+                ldist1 = length(ldir1);
 
-                    ldir0 = normalize(ldir0);
-                    ldir1 = normalize(ldir1);
-                    
-                    light0.xyz = point_lights[li].color * point_lights[li].power / (ldist0 * ldist0);
-                    light1.xyz = point_lights[li].color * point_lights[li].power / (ldist1 * ldist1);
-                    break;
-                case 2:
-                    // spot light. for now assume perfect point lights
-                    ldir0 = spots_lights[li].position - p0;
-                    ldir1 = spots_lights[li].position - p1.xyz;
+                ldir0 = normalize(ldir0);
+                ldir1 = normalize(ldir1);
+                
+                light0.xyz = point_lights[li].color * point_lights[li].power / (ldist0 * ldist0);
+                light1.xyz = point_lights[li].color * point_lights[li].power / (ldist1 * ldist1);
+            } else if (l_type == 2) {
+                // spot light. for now assume perfect point lights
+                ldir0 = spots_lights[li].position - p0;
+                ldir1 = spots_lights[li].position - p1.xyz;
 
-                    ldist0 = length(ldir0);
-                    ldist1 = length(ldir1);
+                ldist0 = length(ldir0);
+                ldist1 = length(ldir1);
 
-                    ldir0 = normalize(ldir0);
-                    ldir1 = normalize(ldir1);
+                ldir0 = normalize(ldir0);
+                ldir1 = normalize(ldir1);
 
-                    light0.xyz = spots_lights[li].color * max(0, pow(dot(spots_lights[li].direction, -ldir0), 3)) * spots_lights[li].power / (ldist0 * ldist0);
-                    light1.xyz = spots_lights[li].color * max(0, pow(dot(spots_lights[li].direction, -ldir1), 3)) * spots_lights[li].power / (ldist1 * ldist1);
-
-                    break;
-                default:
-                    //error
-                    break;
+                light0.xyz = spots_lights[li].color * max(0, pow(dot(spots_lights[li].direction, -ldir0), 3)) * spots_lights[li].power / (ldist0 * ldist0);
+                light1.xyz = spots_lights[li].color * max(0, pow(dot(spots_lights[li].direction, -ldir1), 3)) * spots_lights[li].power / (ldist1 * ldist1);
             }
 
             if (!hit) {
@@ -305,11 +300,9 @@ void main() {
                 ldir1 = vec3(0);
                 p1 = vec4(0);
                 norm1 = vec4(0);
+                vmat_1 = 0;
             }
-
-            ldir1 = in_0;
         }
-
 
         imageStore(light_index_buf, idx, uvec4(li));
         imageStore(material1_buf,   idx, uvec4(vmat_1));

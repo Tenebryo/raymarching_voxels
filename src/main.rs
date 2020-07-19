@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 
 extern crate nalgebra as na;
 
@@ -12,7 +12,7 @@ mod brdf;
 use timing::Timing;
 use gbuffer::GBuffer;
 
-use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer};
+use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, DeviceLocalBuffer};
 use vulkano::command_buffer::{StateCacher, AutoCommandBufferBuilder, DynamicState, sys::{UnsafeCommandBufferBuilderPipelineBarrier, UnsafeCommandBufferBuilder, Kind, Flags}, pool::StandardCommandPool};
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use vulkano::descriptor::PipelineLayoutAbstract;
@@ -54,16 +54,6 @@ use crossterm::{
     cursor::MoveUp
 };
 
-use opensimplex::OsnContext;
-
-const BITS_PER_VOXEL : i32 = 16;
-const VOXELS_PER_U32 : i32 = 32 / BITS_PER_VOXEL;
-
-const BUFFER_FORMAT : Format = Format::R32G32B32A32Sfloat;
-
-const NUM_BUFFERS : usize = 8;
-const NUM_TEMP_IMAGES : usize = 2;
-
 fn main() {
 
     //*************************************************************************************************************************************
@@ -103,8 +93,6 @@ fn main() {
     // Since we can request multiple queues, the `queues` variable is in fact an iterator. In this
     // example we use only one queue, so we just retrieve the first and only element of the
     // iterator and throw it away.
-
-    let cmd_pool = Arc::new(StandardCommandPool::new(device.clone(), compute_queue_family.clone()));
 
     let compute_queue = queues.next().unwrap();
     let graphics_queue = queues.next().unwrap();
@@ -242,9 +230,9 @@ fn main() {
 
     println!("Render Pipeline initialized");
 
-    let timestamp_query_pool = Arc::new(UnsafeQueryPool::new(device.clone(), QueryType::Timestamp, 16).unwrap());
+    let _timestamp_query_pool = Arc::new(UnsafeQueryPool::new(device.clone(), QueryType::Timestamp, 16).unwrap());
 
-    let timestamp_command_pool = Arc::new(StandardCommandPool::new(device.clone(), compute_queue.family()));
+    let _timestamp_command_pool = Arc::new(StandardCommandPool::new(device.clone(), compute_queue.family()));
 
 
     //*************************************************************************************************************************************
@@ -468,6 +456,9 @@ fn main() {
         bincode::deserialize::<vox::VoxelChunk>(chunk_bytes).expect("Deserialization Failed")
     };
 
+    svdag_geometry_data.multiply_root_by_8();
+    svdag_geometry_data.multiply_root_by_8();
+
     // calculate the lod materials
     svdag_geometry_data.calculate_lod_materials();
 
@@ -507,7 +498,7 @@ fn main() {
             //sun
             DirectionalLight {
                 direction : [0.0, -1.0, 0.0],
-                color : [1.0; 3],
+                color : [0.8; 3],
                 _dummy0 : [0;4],
                 _dummy1 : [0;4],
             }
@@ -563,6 +554,256 @@ fn main() {
     
     println!("Created BRDF Buffer");
     println!("Material Data initialized");
+
+
+
+
+
+
+
+    //============================================================================
+    //============================================================================
+    //============================================================================
+    // Some testing
+    //============================================================================
+    //============================================================================
+    //============================================================================
+    /*
+    {
+        // voxel cache update pipeline
+        let voxel_cache_update_compute_pipeline = Arc::new({
+            // raytracing shader
+            use shaders::voxel_cache_update_cs;
+
+            let spec_consts = voxel_cache_update_cs::SpecializationConstants{
+                NLOD : 5,
+                VSIZE : 512,
+                constant_2 : 4,
+                constant_3 : 4,
+                constant_4 : 4,
+            };
+
+            let shader = voxel_cache_update_cs::Shader::load(device.clone()).unwrap();
+            ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
+        });
+        // voxel raycast pipeline
+        let voxel_raycast_compute_pipeline = Arc::new({
+            // raytracing shader
+            use shaders::voxel_raycast_cs;
+
+            let spec_consts = voxel_raycast_cs::SpecializationConstants{
+                NLOD : 5,
+                VSIZE : 512,
+                constant_2 : 256,
+                constant_3 : 1,
+                constant_4 : 1,
+            };
+
+            let shader = voxel_raycast_cs::Shader::load(device.clone()).unwrap();
+            ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
+        });
+
+        let chunk_desc_buffer = {
+
+            let update = true;
+
+            CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, [
+                shaders::VChunkDescriptor {
+                    position : [0, 0, 0],
+                    log_size : 9,
+                    root : 0,
+                    update : update as _,
+                    _dummy0 : [0; 8],
+                },
+                shaders::VChunkDescriptor {
+                    position : [1, 0, 0],
+                    log_size : 9,
+                    root : 0,
+                    update : update as _,
+                    _dummy0 : [0; 8],
+                },
+                shaders::VChunkDescriptor {
+                    position : [0, 1, 0],
+                    log_size : 9,
+                    root : 0,
+                    update : update as _,
+                    _dummy0 : [0; 8],
+                },
+                shaders::VChunkDescriptor {
+                    position : [1, 1, 0],
+                    log_size : 9,
+                    root : 0,
+                    update : update as _,
+                    _dummy0 : [0; 8],
+                },
+                shaders::VChunkDescriptor {
+                    position : [0, 0, 1],
+                    log_size : 9,
+                    root : 0,
+                    update : update as _,
+                    _dummy0 : [0; 8],
+                },
+                shaders::VChunkDescriptor {
+                    position : [1, 0, 1],
+                    log_size : 9,
+                    root : 0,
+                    update : update as _,
+                    _dummy0 : [0; 8],
+                },
+                shaders::VChunkDescriptor {
+                    position : [0, 1, 1],
+                    log_size : 9,
+                    root : 0,
+                    update : update as _,
+                    _dummy0 : [0; 8],
+                },
+                shaders::VChunkDescriptor {
+                    position : [1, 1, 1],
+                    log_size : 9,
+                    root : 0,
+                    update : update as _,
+                    _dummy0 : [0; 8],
+                }
+            ].iter().cloned()).unwrap()
+        };
+        let voxel_cache : Arc<DeviceLocalBuffer<[u32]>> = DeviceLocalBuffer::array(device.clone(), 512*512*512*5, BufferUsage::all(), [compute_queue.family()].iter().cloned()).unwrap();
+
+        fn gen_position() -> f32 {
+            thread_rng().gen_range(-1f32,1f32) * 256.0
+        }
+
+        let ray_origins_data = (0..(1920 * 1080 * 3)).map(|_| gen_position() ).collect::<Vec<_>>();
+        let ray_dirs_data    = (0..(1920 * 1080 * 3)).map(|_| gen_position() ).collect::<Vec<_>>();
+        let output_data      = (0..(1920 * 1080 * 3)).map(|_| 0.0 ).collect::<Vec<_>>();
+
+        let ray_origins_buffer = CpuAccessibleBuffer::from_iter(
+            device.clone(),
+            BufferUsage::all(),
+            false,
+            ray_origins_data.iter().cloned()
+        ).unwrap();
+
+        let ray_dirs_buffer = CpuAccessibleBuffer::from_iter(
+            device.clone(),
+            BufferUsage::all(),
+            false,
+            ray_dirs_data.iter().cloned()
+        ).unwrap();
+
+        let output_buffer = CpuAccessibleBuffer::from_iter(
+            device.clone(),
+            BufferUsage::all(),
+            false,
+            output_data.iter().cloned()
+        ).unwrap();
+        
+
+        let voxel_cache_update_layout = voxel_cache_update_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
+        let voxel_cache_update_set = Arc::new(PersistentDescriptorSet::start(voxel_cache_update_layout.clone())
+            .add_buffer(voxel_cache.clone()).unwrap()
+            .add_buffer(chunk_desc_buffer.clone()).unwrap()
+            .add_buffer(svdag_geometry_buffer.clone()).unwrap()
+            .add_buffer(svdag_material_buffer.clone()).unwrap()
+            .build().unwrap()
+        );
+
+        let voxel_raycast_layout = voxel_raycast_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
+        let voxel_raycast_set = Arc::new(PersistentDescriptorSet::start(voxel_raycast_layout.clone())
+            .add_buffer(voxel_cache.clone()).unwrap()
+            .add_buffer(ray_origins_buffer.clone()).unwrap()
+            .add_buffer(ray_dirs_buffer.clone()).unwrap()
+            .add_buffer(output_buffer.clone()).unwrap()
+            .build().unwrap()
+        );
+
+        let pc = shaders::VoxelCachePushConstants{
+            camera_origin : [0; 3],
+            index_offset : [0; 3],
+            nchunks : 1,
+        };
+
+        let mut cmd_buf_builder = AutoCommandBufferBuilder::primary(device.clone(), compute_queue.family().clone()).unwrap();
+
+        cmd_buf_builder.dispatch([512/4, 512/4, 512/4], voxel_cache_update_compute_pipeline.clone(), voxel_cache_update_set, &pc).unwrap();
+
+        let cmd_buf = Arc::new(cmd_buf_builder.build().unwrap());
+
+
+        let mut cmd_buf_builder2 = AutoCommandBufferBuilder::primary(device.clone(), compute_queue.family().clone()).unwrap();
+
+        cmd_buf_builder2.dispatch([1920 * 1080 / 256, 1, 1], voxel_raycast_compute_pipeline.clone(), voxel_raycast_set, &()).unwrap();
+
+        let cmd_buf2 = Arc::new(cmd_buf_builder2.build().unwrap());
+
+        let start = Instant::now();
+        let future = sync::now(device.clone())
+            .then_execute(compute_queue.clone(), cmd_buf.clone()).unwrap()
+            .then_signal_fence_and_flush().unwrap();
+
+
+        future.wait(None).unwrap();
+        let elapsed = start.elapsed();
+
+        println!("Cache Fill Time From Scratch: {:?} (COLD)", elapsed);
+
+        let start = Instant::now();
+        let future = sync::now(device.clone())
+            .then_execute(compute_queue.clone(), cmd_buf.clone()).unwrap()
+            .then_signal_fence_and_flush().unwrap();
+
+
+        future.wait(None).unwrap();
+        let elapsed = start.elapsed();
+
+        println!("Cache Fill Time From Scratch: {:?} (HOT)", elapsed);
+
+        let start = Instant::now();
+        let future = sync::now(device.clone())
+            .then_execute(compute_queue.clone(), cmd_buf.clone()).unwrap()
+            .then_signal_fence_and_flush().unwrap();
+
+
+        future.wait(None).unwrap();
+        let elapsed = start.elapsed();
+
+        println!("Cache Fill Time From Scratch: {:?} (HOT)", elapsed);
+
+        let start = Instant::now();
+        let future = sync::now(device.clone())
+            .then_execute(compute_queue.clone(), cmd_buf2.clone()).unwrap()
+            .then_signal_fence_and_flush().unwrap();
+
+
+        future.wait(None).unwrap();
+        let elapsed = start.elapsed();
+
+        println!("Raycast Time From Scratch: {:?} (COLD)", elapsed);
+        let start = Instant::now();
+        let future = sync::now(device.clone())
+            .then_execute(compute_queue.clone(), cmd_buf2.clone()).unwrap()
+            .then_signal_fence_and_flush().unwrap();
+
+
+        future.wait(None).unwrap();
+        let elapsed = start.elapsed();
+
+        println!("Raycast Time From Scratch: {:?} (HOT)", elapsed);
+
+        let read_access = output_buffer.read().unwrap();
+
+        std::thread::sleep_ms(500);
+
+        let avg_iters : f32 = read_access.iter().take(1920 * 1080).sum::<f32>() / (1920.0 * 1080.0);
+
+        println!("avg iters = {}", avg_iters);
+
+        for i in 0..1000 {
+            print!("{} ", read_access[i]);
+        }
+    }
+    // */
+
+
 
     //*************************************************************************************************************************************
     // Main Event Loop
@@ -841,7 +1082,7 @@ fn main() {
                     .dispatch([block_dim_x, block_dim_y, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], light_bounce_compute_pipeline.clone(), light_bounce_set.clone(), light_bounce_pc).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_0.clone(), light_occlude_pc).unwrap()
-                    // .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_1.clone(), light_occlude_pc).unwrap()
+                    .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_1.clone(), light_occlude_pc).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], light_combine_compute_pipeline.clone(), light_combine_set.clone(), light_combine_pc).unwrap();
 
                 let render_command_buffer = render_command_buffer_builder.build().unwrap();

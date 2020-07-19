@@ -1,0 +1,256 @@
+#version 450
+
+// #################################################################################################
+// #################################################################################################
+// Data Bindings
+// #################################################################################################
+// #################################################################################################
+
+layout(constant_id = 0) const uint VSIZE = 512;
+layout(constant_id = 1) const uint NLOD = 5;
+
+const uint VSIZE_H = VSIZE / 2;
+const uint VSIZE_Q = VSIZE / 4;
+const uint VSIZE_3Q = VSIZE_H + VSIZE_Q;
+const uint VMASK = VSIZE - 1;
+const uint VNMASK = ~VMASK;
+
+const uint NCASC = 2 * NLOD;
+
+// may be tradeoff between coalesced memory access and thread divergence
+layout(local_size_x_id = 2, local_size_y_id = 3, local_size_z_id = 4) in;
+
+layout (binding = 0) readonly buffer VoxelCacheData {
+    // lod cascaded voxel material cache
+    // lod[0] := the highest detail 
+    // cache size = VSIZE * VSIZE * VSIZE * NLOD
+    uint vcache[];
+};
+
+layout (binding = 1) readonly buffer RayOData {
+    vec3 ray_origins[];
+};
+layout (binding = 2) readonly buffer RayDData {
+    vec3 ray_directions[];
+};
+layout (binding = 3) writeonly buffer OutputData {
+    float output_data[];
+} data_out;
+
+// #################################################################################################
+// #################################################################################################
+// Helper Functions
+// #################################################################################################
+// #################################################################################################
+
+#define INCIDENCE_X 0
+#define INCIDENCE_Y 1
+#define INCIDENCE_Z 2
+
+#define EPS 1e-6
+
+uint cache_index(int lod, ivec3 idx) {
+    return idx.x + VSIZE * (idx.y + VSIZE * (idx.z + VSIZE * lod));
+}
+
+vec2 project_cube(vec3 id, vec3 od, vec3 mn, vec3 mx) {
+
+    vec3 tmn = fma(id, mn, od);
+    vec3 tmx = fma(id, mx, od);
+
+    float ts = max(tmn.x, max(tmn.y, tmn.z));
+    float te = min(tmn.x, min(tmn.y, tmn.z));
+
+    return vec2(ts, te);
+}
+
+struct CascadeIntersection {
+    ivec3 position;
+    int cascade;
+    vec3 next;
+    float dist;
+};
+
+void raycast_precompute_cascade_intersection_order(
+    vec3 ro, vec3 rd, float max_dist,
+    out ivec3 s, out vec3 d, out vec3 m, out ivec3 p, out int csc_out,
+    inout CascadeIntersection intersections[NCASC]
+) {
+    d = 1.0 / abs(rd);
+    s = ivec3(sign(rd));
+
+    vec3 id = 1.0 / (s * rd);
+    vec3 od = - (s * ro) * id;
+
+    for (int csc = 0; csc < NLOD; csc++) {
+        int csc_size = 1 << csc;
+        float rcsc_size = 1.0 / csc_size;
+        vec3 mn = vec3(-VSIZE_H * csc_size);
+        vec3 mx = vec3( VSIZE_H * csc_size);
+        vec2 intersection = project_cube(id, od, mn, mx);
+
+
+        // min intersection is entering, max intersection is exiting
+
+        // position of the 
+        vec3 omn = rcsc_size * (ro + rd * (intersection.x + EPS));
+        vec3 omx = 0.5 * rcsc_size * (ro + rd * (intersection.y + EPS));
+
+        ivec3 pmn = ivec3(floor(omn));
+        ivec3 pmx = ivec3(floor(omx));
+        
+        // cull negative intersections
+        if (intersection.x < 0) {
+            intersection.x = 2 * max_dist;
+        }
+
+        if (intersection.y < 0) {
+            intersection.y = 2 * max_dist;
+        }
+
+        // entering cascade
+        intersections[2 * csc].position = pmn;
+        intersections[2 * csc].cascade = csc;
+        intersections[2 * csc].next = abs(pmn + (1 + s) / 2 - omn) * d;
+        intersections[2 * csc].dist = intersection.x;
+        
+        // exiting cascade
+        intersections[2 * csc + 1].position = pmx;
+        intersections[2 * csc + 1].cascade = csc + 1;
+        intersections[2 * csc + 1].next = abs(pmx + (1 + s) / 2 - omx) * d;
+        intersections[2 * csc + 1].dist = intersection.y;
+    }
+
+    // selection sort because it is simple and has low overhead
+    for (int i = 0; i < NLOD * 2 - 1; i++) {
+        float min_val = intersections[i].dist;
+        uint min_idx = i;
+        for(int j = i + 1; j < NLOD * 2; j++) {
+            float dist = intersections[j].dist;
+            if (dist < min_val && dist < max_dist) {
+                min_val = intersections[j].dist;
+                min_idx = j;
+            }
+        }
+
+        CascadeIntersection tmp = intersections[min_idx];
+        intersections[min_idx] = intersections[i];
+        intersections[i] = tmp;
+    }
+
+    csc_out = intersections[0].cascade;
+    m = intersections[0].next;
+    p = intersections[0].position;
+}
+
+bool raycast_step(
+    inout ivec3 p, inout vec3 m, in vec3 d, in ivec3 s, out uint idx, inout float dist, in float max_dist,
+    inout int csc, inout int icsc, inout CascadeIntersection intersections[NCASC]
+) {
+    float ndst = 0;
+    if (m.x < m.y) {
+        if (m.x < m.z) {
+            ndst = m.x;
+            p.x += s.x;
+            m.x += d.x;
+        } else {
+            ndst = m.z;
+            p.z += s.z;
+            m.z += d.z;
+        }
+    } else {
+        if (m.y < m.z) {
+            ndst = m.y;
+            p.y += s.y;
+            m.y += d.y;
+        } else {
+            ndst = m.z;
+            p.z += s.z;
+            m.z += d.z;
+        }
+    }
+
+    // dist = ndst * (1 << csc);
+
+    if (dist + EPS > intersections[icsc + 1].dist) {
+        // advance to the next cascade interval
+        icsc += 1;
+        csc = intersections[icsc].cascade;
+        m   = intersections[icsc].next;
+        p   = intersections[icsc].position;
+    }
+    dist = ndst * (1 << csc);
+
+    // calculate the dist and position in the absolute scale
+    idx = cache_index(csc, p);
+
+    // return true if we exit the last cascade
+    return false; //csc >= NLOD || dist > max_dist;
+}
+
+// I hate the C preprocessor
+#define CAT(a, b) PP_CAT_I(a, b)
+#define PP_CAT_I(a, b) PP_CAT_II(~, a ## b)
+#define PP_CAT_II(p, res) res
+#define UNIQUE(a) CAT(a, __LINE__)
+
+// ray iteration macro allows custom traversal code, stop, etc.
+// procedure:
+//   1. precompute (reduce branching in hot loop)
+//     1a. calculate where the ray intersects each cascade
+//     1b. sort cascade intersections by distance (throwing out negative intersections)
+//   2. iterate over voxels until one of the termination conditions (max distance, exit all cascades)
+//     2a. find the next closest intersection with a voxel interface
+//     2b. advanced to next cascade if necessary
+//     2c. run traversal code block (can end traversal early by using break)
+#define VOXEL_RAY_ITER_IMPL(ro, rd, idx, csc, dist, max_dist, body, s, p, m, d, icsc, intersections) {\
+    CascadeIntersection intersections[NCASC];\
+    ivec3 s, p;\
+    vec3 m, d;\
+    int icsc = 0;\
+    dist = 0;\
+    raycast_precompute_cascade_intersection_order(ro, rd, max_dist, s, d, m, p, csc, intersections);\
+    while(dist < max_dist) {\
+        if (raycast_step(p, m, d, s, idx, dist, max_dist, csc, icsc, intersections)) {break;};\
+        {body}\
+    }\
+}
+
+#define VOXEL_RAY_ITER(ro, rd, idx, csc, dist, max_dist, body)\
+    VOXEL_RAY_ITER_IMPL(ro, rd, idx, csc, dist, max_dist, body, UNIQUE(s), UNIQUE(p), UNIQUE(m), UNIQUE(d), UNIQUE(icsc), UNIQUE(intersections))
+
+// #################################################################################################
+// #################################################################################################
+// Main Function
+// #################################################################################################
+// #################################################################################################
+
+void main() {
+
+    uint idx = gl_GlobalInvocationID.x;
+
+    if (idx < 1920 * 1080) {
+        
+        vec3 ro = ray_origins[idx];
+        vec3 rd = normalize(ray_directions[idx]);
+
+        float max_dist = 8192;
+        
+        uint vidx = 0;
+        int csc = 0;
+        float dist = 0;
+        
+        int iters = 0;
+        //     // if(vcache[idx] != 0) {
+
+        VOXEL_RAY_ITER(ro, rd, vidx, csc, dist, max_dist, {
+            if(iters >= 0) {
+                break;
+            }
+            iters += 1;
+        })
+
+        data_out.output_data[idx] = dist;
+
+    }
+}
