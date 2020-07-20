@@ -252,6 +252,10 @@ impl VoxelChunk {
                 (-sv) as u32
             };
 
+            if m == 0 {
+                continue;
+            }
+
             mats.entry(m)
                 .and_modify(|x| *x += 1)
                 .or_insert(0usize);

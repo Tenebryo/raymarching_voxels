@@ -52,7 +52,7 @@ void main() {
         // the ray direction for this pixel
         vec3 ray_dir = normalize(camera_forward + aspect_ratio * ssc.x * vx + ssc.y * vy);
 
-        ivec2 pre_idx = size / 8;
+        ivec2 pre_idx = idx / 8;
 
         float init_depth = min(
             min(
@@ -83,7 +83,7 @@ void main() {
 
         dist += init_depth;
         vec3 p = camera_origin + ray_dir * dist;
-        vec3 n = INCIDENCE_NORMAL_VECTORS[incidence];
+        vec3 n = INCIDENCE_NORMAL_VECTORS[incidence] * sign(-ray_dir);
 
         vec4 noise_value = texture(blue_noise, vec3(idx / vec2(noise_frames), noise_idx / float(noise_frames)));
 

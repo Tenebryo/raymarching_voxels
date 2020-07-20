@@ -235,8 +235,10 @@ void main() {
                 // light = r1;
             }
 
-            light = ambient_light + (l0 * rdd0 * brdf_weight_0);
+            // light = ambient_light + (l0 * rdd0 * brdf_weight_0);
             // light = ambient_light;
+
+            light = vec3(length(camera_origin - p0.xyz));
         }
         
         vec3 prev_light = imageLoad(light_prev_buf, idx).xyz;

@@ -13,6 +13,7 @@
 
 #define MIN_VOXEL_SIZE (1.0 / pow(2, MAX_DAG_DEPTH))
 
+#define MAX_DIST 1e9
 
 #define AXIS_X_MASK 1
 #define AXIS_Y_MASK 2
@@ -21,9 +22,6 @@
 #define INCIDENCE_X 0
 #define INCIDENCE_Y 1
 #define INCIDENCE_Z 2
-
-#define CHILD_OFFSET_BITS 4
-#define CHILD_OFFSET_MASK 3
 
 struct VChildDescriptor {
     // if a sub-DAG: positive 1-index pointers to children
@@ -186,11 +184,14 @@ uint extract_child_slot(uvec3 pos, uint scale) {
 #define VOXEL_MARCH_MAX_DEPTH 2
 #define VOXEL_MARCH_LOD 3
 #define VOXEL_MARCH_MAX_DIST 4
+#define VOXEL_MARCH_ERROR 5
+#define VOXEL_MARCH_LOOP_END 6
 
 bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist, out uint incidence, out uint vid, out uint material, out uint return_state, out uint iterations) {
 
-    const uint MAX_SCALE = (1<<MAX_DAG_DEPTH);
 
+
+    const uint MAX_SCALE = (1<<MAX_DAG_DEPTH);
 
     const ivec3 incidence_axis[3] = {
         ivec3(1,0,0),
@@ -223,7 +224,10 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
     vec3 id = 1.0 / d;
     vec3 od = - o * id;
 
-    vec2 t = vec2(0,MAX_SCALE * max_dist);
+    max_dist *= MAX_SCALE;
+
+
+    vec2 t = vec2(0, max_dist);
 
     float h = t.y;
 
@@ -238,18 +242,29 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
     uint depth = 1;
 
     uint incidence_min;
-    t = interval_intersect(t, project_cube(id, od, pos, pos + scale, incidence_min, incidence));
+
+    vec2 tp = project_cube(id, od, pos, pos + scale, incidence_min, incidence);
+
+    t = interval_intersect(t, tp);
+
+    iterations = 0;
 
     if (!interval_nonempty(t)) {
         // we didn't hit the bounding cube
+        return_state = VOXEL_MARCH_MISS;
+        dist = tp.x;
         return false;
     }
 
+    
+
+
+    scale = scale >> 1;
     idx = select_child(pos, scale, o, d, t.x);
+    pos = child_cube(pos, scale, idx);
 
-    scale >>= 1;
+    float test_idx = idx ^ dmask;
 
-    iterations = 0;
 
     return_state = VOXEL_MARCH_MISS;
 
@@ -261,6 +276,7 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
     while (iterations < 512) {
         iterations += 1;
 
+
         uint new_incidence;
 
         vec2 tc = project_cube(id, od, pos, pos + scale, incidence_min, new_incidence);
@@ -268,14 +284,16 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
         if (voxel_valid_bit(parent, dmask ^ idx) && interval_nonempty(t)) {
 
             if (scale <= tc.x * 0.002 || depth >= max_depth) {
+
                 // voxel is too small
                 dist = t.x / MAX_SCALE;
                 return_state = depth >= max_depth ? VOXEL_MARCH_MAX_DEPTH : VOXEL_MARCH_LOD;
                 material = lod_materials[parent];
                 return true;
             }
+        
 
-            if (tc.x > max_dist * MAX_SCALE) {
+            if (tc.x > max_dist) {
                 // voxel is beyond the render distance
                 return_state = VOXEL_MARCH_MAX_DIST;
                 return false;
@@ -308,6 +326,7 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
                 continue;
             }
         }
+
 
         incidence = new_incidence;
 
@@ -368,5 +387,6 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
 
     }
 
+    return_state = VOXEL_MARCH_LOOP_END;
     return false;
 }

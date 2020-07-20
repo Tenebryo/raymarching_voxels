@@ -28,7 +28,9 @@ pub struct GBuffer {
     pub position1_buffer : Arc<StorageImage<Format>>,
     pub temporal_buffer : Arc<StorageImage<Format>>,
     pub normal0_buffer : Arc<StorageImage<Format>>,
+    pub normal0b_buffer : Arc<StorageImage<Format>>,
     pub normal1_buffer : Arc<StorageImage<Format>>,
+    pub normal1b_buffer : Arc<StorageImage<Format>>,
     pub ldir0_buffer : Arc<StorageImage<Format>>,
     pub ldir1_buffer : Arc<StorageImage<Format>>,
     pub light0_buffer : Arc<StorageImage<Format>>,
@@ -58,13 +60,16 @@ impl GBuffer {
 
         let index_buffer           = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
         let light_index_buffer     = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
-        let rng_seed_buffer        = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
+        
+        let rng_seed_buffer        = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Uint, [queue_family].iter().cloned()).unwrap();
         
         let material0_buffer       = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
         let material1_buffer       = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
 
         let normal0_buffer         = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let normal0b_buffer        = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
         let normal1_buffer         = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let normal1b_buffer        = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
         let ldir0_buffer           = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
         let ldir1_buffer           = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
         let position0_buffer       = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
@@ -87,7 +92,9 @@ impl GBuffer {
             material0_buffer,
             material1_buffer,
             normal0_buffer,
+            normal0b_buffer,
             normal1_buffer,
+            normal1b_buffer,
             alpha_buffer,
             ldir0_buffer,
             ldir1_buffer,

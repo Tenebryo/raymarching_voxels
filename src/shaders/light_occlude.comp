@@ -27,6 +27,8 @@ layout(rgba32f,  binding = 1) readonly uniform image2D position_buf;
 layout(rgba32f,  binding = 2) readonly uniform image2D ldir_buf;
 layout(rgba32f,  binding = 3) uniform image2D light_buf;
 
+#define TESTING_DEBUG 1
+
 // voxel geometry information and functions
 #define VOXEL_BINDING_OFFSET 4
 #include "voxel.glsl"
@@ -39,6 +41,16 @@ layout(push_constant) uniform LightOccludePushConstantData {
 
 const vec3 INCIDENCE_NORMAL_VECTORS[3] = {vec3(1,0,0), vec3(0,1,0), vec3(0,0,1)};
 
+const vec3 COLOR_WHEEL[7] = {
+    vec3(1,0,0),
+    vec3(0,1,0),
+    vec3(1,1,0),
+    vec3(0,1,1),
+    vec3(0,0,1),
+    vec3(1,1,1),
+    vec3(1,0,1)
+};
+
 /// cause indirect lighting to occlude if it intersects voxel geometry
 void main() {
     ivec2 idx = ivec2(
@@ -48,26 +60,35 @@ void main() {
 
     ivec2 size = imageSize(position_buf);
 
-    float aspect_ratio = float(size.x) / float(size.y);
-
     if (idx.x < size.x && idx.y < size.y) {
 
-        vec3 p = imageLoad(position_buf, idx).xyz;
+        vec4 pos = imageLoad(position_buf, idx);
         vec4 ldd = imageLoad(ldir_buf, idx);
+
+        vec3 p = pos.xyz;
+
+        if (pos.w < 1e-6) {
+            // exit if there aren't rays to cast
+            return;
+        }
 
         vec3 dir = ldd.xyz;
         float ldist = ldd.w;
 
-        float dist;
-        uint incidence;
-        uint material;
-        uint ret_code;
-        uint iterations;
-        uint vid;
+        float dist = 0;
+        uint incidence = 0;
+        uint material = 0;
+        uint ret_code = 0;
+        uint iterations = 0;
+        uint vid = 0;
 
-        bool hit = voxel_march(p + dir * MIN_VOXEL_SIZE, dir, max_depth, ldist+0.1, dist, incidence, vid, material, ret_code, iterations);
+        float advance = 0.01;
 
-        dist += MIN_VOXEL_SIZE;
+        bool hit = voxel_march(p + dir * advance, dir, max_depth, ldist+0.1, dist, incidence, vid, material, ret_code, iterations);
+
+        dist += advance;
+
+        float h = (hit) ? 1 : 0;
 
         vec4 light = imageLoad(light_buf, idx);
 
@@ -80,6 +101,8 @@ void main() {
             light = vec4(0,0,0,1);
         }
         // otherwise, we keep the light value from the light, which was set from the bounce shader
+        // imageStore(light_buf, idx, vec4((hit ? vec3(0,1,0) : vec3(1,0,0)) * vec3(iterations), 1));
+        // imageStore(light_buf, idx, vec4(h * (p + dist * dir), iterations / 100.0));
         imageStore(light_buf, idx, light);
     }
 }

@@ -228,6 +228,21 @@ fn main() {
         ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
     });
 
+    // build denoise compute pipeline
+    let normal_blend_compute_pipeline = Arc::new({
+        // raytracing shader
+        use shaders::normal_blend_cs;
+
+        let spec_consts = normal_blend_cs::SpecializationConstants{
+            PATCH_DIST : 1,
+            constant_1 : local_size_x,
+            constant_2 : local_size_y,
+        };
+
+        let shader = normal_blend_cs::Shader::load(device.clone()).unwrap();
+        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
+    });
+
     println!("Render Pipeline initialized");
 
     let _timestamp_query_pool = Arc::new(UnsafeQueryPool::new(device.clone(), QueryType::Timestamp, 16).unwrap());
@@ -441,10 +456,10 @@ fn main() {
         bincode::deserialize::<vox::VoxelChunk>(chunk_bytes).expect("Deserialization Failed")
     };
 
-    svdag_geometry_data.multiply_root_by_8();
-    svdag_geometry_data.multiply_root_by_8();
-    svdag_geometry_data.multiply_root_by_8();
-    svdag_geometry_data.multiply_root_by_8();
+    // svdag_geometry_data.multiply_root_by_8();
+    // svdag_geometry_data.multiply_root_by_8();
+    // svdag_geometry_data.multiply_root_by_8();
+    // svdag_geometry_data.multiply_root_by_8();
 
     // calculate the lod materials
     svdag_geometry_data.calculate_lod_materials();
@@ -484,8 +499,8 @@ fn main() {
         let lights = [
             //sun
             DirectionalLight {
-                direction : [0.0, -1.0, 0.0],
-                color : [0.8; 3],
+                direction : [1.0, -0.0001, -0.0001],
+                color : [0.5; 3],
                 _dummy0 : [0;4],
                 _dummy1 : [0;4],
             }
@@ -612,20 +627,39 @@ fn main() {
                     recreate_swapchain = true;
                 }
 
-                let time = p_start.elapsed().as_secs_f32();
+                let _time = p_start.elapsed().as_secs_f32();
 
-                if let Ok(mut wlock) = directional_light_buffer.write() {
-                    wlock[0].direction = [time.sin(), time.cos(), 0.0];
-                }
-
-                // reproject_pc.new_forward = [forward.x, forward.y, forward.z];
+                // if let Ok(mut wlock) = directional_light_buffer.write() {
+                //     wlock[0].direction = [time.sin(), time.cos(), 0.0];
+                // }
+            
+                let normal_blend_pc_a = shaders::NormalBlendPushConstantData {
+                    stride : 1,
+                };
+                
+                let normal_blend_pc_b = shaders::NormalBlendPushConstantData {
+                    stride : 1,
+                };
+                
+                let normal_blend_layout = normal_blend_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
+                let normal_blend_set_a = Arc::new(PersistentDescriptorSet::start(normal_blend_layout.clone())
+                    .add_image(gbuffer.normal0_buffer.clone()).unwrap()
+                    .add_image(gbuffer.position0_buffer.clone()).unwrap()
+                    .add_image(gbuffer.normal0b_buffer.clone()).unwrap()
+                    .build().unwrap()
+                );
+                let normal_blend_set_b = Arc::new(PersistentDescriptorSet::start(normal_blend_layout.clone())
+                    .add_image(gbuffer.normal0b_buffer.clone()).unwrap()
+                    .add_image(gbuffer.position0_buffer.clone()).unwrap()
+                    .add_image(gbuffer.normal0_buffer.clone()).unwrap()
+                    .build().unwrap()
+                );
                 
                 intersect_pc.camera_forward = [forward.x, forward.y, forward.z];
                 intersect_pc.camera_origin = [position.x, position.y, position.z];
                 intersect_pc.camera_up = [up.x, up.y, up.z];
                 intersect_pc.frame_idx += 1;
                 intersect_pc.noise_idx = thread_rng().gen_range(0,intersect_pc.noise_frames);
-                // reproject_pc.movement = [position.x - old_position.x, position.y - old_position.y, position.z - old_position.z];
                 old_position = position;
 
                 let intersect_layout = intersect_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
@@ -652,7 +686,7 @@ fn main() {
                     camera_forward : intersect_pc.camera_forward,
                     camera_origin : intersect_pc.camera_origin,
                     camera_up : intersect_pc.camera_up,
-                    max_depth : 5,
+                    max_depth : 6,
 
                     _dummy0 : [0;4],
                     _dummy1 : [0;4],
@@ -709,7 +743,7 @@ fn main() {
                     n_point_lights : 0,
                     n_spot_lights : 0,
                     render_dist : intersect_pc.render_dist,
-                    max_depth : 8,
+                    max_depth : intersect_pc.max_depth,
                 };
                 
                 let light_occlude_layout = light_occlude_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
@@ -745,7 +779,7 @@ fn main() {
                 let light_occlude_pc = shaders::LightOccludePushConstantData {
                     render_dist : intersect_pc.render_dist,
                     num_materials : 2,
-                    max_depth : 8,
+                    max_depth : intersect_pc.max_depth,
                 };
 
                 
@@ -801,23 +835,14 @@ fn main() {
                 // we build a command buffer for this frame
                 // needs to be built each frame because we don't know which swapchain image we will be told to render to
                 // its possible a command buffer could be built for each swapchain ahead of time, but that would add complexity
-                // let mut render_command_buffer_builder = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap();
-
-                // render_command_buffer_builder
-                //     .dispatch([(gbuffer.pre_trace_width - 1) / local_size_x + 1, (gbuffer.pre_trace_height - 1) / local_size_y + 1, 1], pre_trace_compute_pipeline.clone(), pre_trace_set.clone(), pre_trace_pc).unwrap()
-                //     .dispatch([block_dim_x, block_dim_y, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
-                //     .dispatch([block_dim_x, block_dim_y, 1], light_bounce_compute_pipeline.clone(), light_bounce_set.clone(), light_bounce_pc).unwrap()
-                //     .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_0.clone(), light_occlude_pc).unwrap()
-                //     .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_1.clone(), light_occlude_pc).unwrap()
-                //     .dispatch([block_dim_x, block_dim_y, 1], light_combine_compute_pipeline.clone(), light_combine_set.clone(), light_combine_pc).unwrap();
-
-                // let render_command_buffer = render_command_buffer_builder.build().unwrap();
 
                 let mut render_command_buffer_builder = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap();
 
                 render_command_buffer_builder
                     .dispatch([(gbuffer.pre_trace_width - 1) / local_size_x + 1, (gbuffer.pre_trace_height - 1) / local_size_y + 1, 1], pre_trace_compute_pipeline.clone(), pre_trace_set.clone(), pre_trace_pc).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
+                    .dispatch([block_dim_x, block_dim_y, 1], normal_blend_compute_pipeline.clone(), normal_blend_set_a.clone(), normal_blend_pc_a).unwrap()
+                    .dispatch([block_dim_x, block_dim_y, 1], normal_blend_compute_pipeline.clone(), normal_blend_set_b.clone(), normal_blend_pc_b).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], light_bounce_compute_pipeline.clone(), light_bounce_set.clone(), light_bounce_pc).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_0.clone(), light_occlude_pc).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_1.clone(), light_occlude_pc).unwrap()

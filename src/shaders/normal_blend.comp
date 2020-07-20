@@ -1,0 +1,61 @@
+#version 450
+
+layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
+
+layout(binding = 0, rgba32f) readonly uniform image2D normal_buf;
+layout(binding = 1, rgba32f) readonly uniform image2D position_buf;
+layout(binding = 2, rgba32f) writeonly uniform image2D out_normal_buf;
+
+layout(constant_id = 0) const int PATCH_DIST = 1;
+
+layout(push_constant) uniform NormalBlendPushConstantData {
+    int stride;
+};
+
+void main() {
+
+    
+    ivec2 idx = ivec2(
+        gl_GlobalInvocationID.x,
+        gl_GlobalInvocationID.y
+    );
+
+    ivec2 size = imageSize(normal_buf);
+
+    if (idx.x < size.x && idx.y < size.y) {
+
+        vec3 reference_position = imageLoad(position_buf, idx).xyz;
+        vec4 reference_normal = imageLoad(normal_buf, idx);
+
+        if (reference_normal.w < 1e-6) {
+            return;
+        }
+
+        vec3 integral = vec3(0);
+
+        for (int y = -PATCH_DIST; y <= PATCH_DIST; y++) {
+            for (int x = -PATCH_DIST; x <= PATCH_DIST; x++) {
+                ivec2 nidx = idx + stride * ivec2(x, y);
+
+                vec4 n = imageLoad(normal_buf, nidx);
+                vec3 p = imageLoad(position_buf, nidx).xyz;
+
+                vec3 d = reference_position - p;
+
+                float dist = dot(d, d);
+
+                float w = max(0, 1 - 10 * dist) * n.w;
+
+                if (dist > 0.0001) {
+                    w = 0;
+                }
+
+                integral += n.xyz * w;
+            }
+        }
+
+        imageStore(out_normal_buf, idx, vec4(normalize(integral), 1));
+
+    }
+
+}
