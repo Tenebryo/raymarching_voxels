@@ -1,12 +1,14 @@
 #version 450
-layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
+
+
+layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
 
 // color map in
-layout(rgba32f, binding = 0) uniform image2D inBuffer;
+layout(rgba32f, binding = 0) readonly uniform image2D in_buf;
 // world positions in
-layout(rgba32f, binding = 1) uniform image2D pBuffer;
+layout(rgba32f, binding = 1) readonly uniform image2D position_buf;
 // color map out
-layout(rgba32f, binding = 2) uniform image2D outBuffer;
+layout(rgba32f, binding = 2) uniform image2D out_buf;
 // we already know the world positions out (the positions from the current frame)
 
 layout(push_constant) uniform ReprojectPushConstantData {
@@ -15,15 +17,39 @@ layout(push_constant) uniform ReprojectPushConstantData {
     vec3 up;
 };
 
+/*
+
+invert this code snippet from ./intersect.comp to get the pixel from ray direction
+
+    ivec2 size = imageSize(pImage);
+
+    float aspect_ratio = float(size.x) / float(size.y);
+
+    if (idx.x < size.x && idx.y < size.y) {
+        // calculate ray for this pixel by constructing a virtual screen
+        vec3 vx = normalize(cross(camera_forward, camera_up));
+        vec3 vy = normalize(cross(camera_forward, vx));
+
+        // ND coordinates [0,1]x[0,1]
+        vec2 ndc = vec2(idx) / vec2(size);
+
+        // (pseudo) screen space coordinates [-1,1]x[-1,1]
+        vec2 ssc = 2 * (ndc - 0.5);
+
+        // the ray direction for this pixel
+        vec3 ray_dir = normalize(camera_forward + aspect_ratio * ssc.x * vx + ssc.y * vy);
+
+
+*/
+
 void main() {
 
-    
     ivec2 idx = ivec2(
         gl_GlobalInvocationID.x,
         gl_GlobalInvocationID.y
     );
 
-    ivec2 size = imageSize(outBuffer);
+    ivec2 size = imageSize(out_buf);
 
     float aspect_ratio = float(size.x) / float(size.y);
 
@@ -33,8 +59,16 @@ void main() {
         vec3 sy = normalize(cross(forward, sx));
 
         // get the world position
-        vec3 wp = imageLoad(pBuffer, idx).xyz;
-        
+        vec4 p = imageLoad(position_buf, idx);
+
+        if (p.w < 1e-6) {
+            // no information stored at this location
+            return;
+        }
+
+        vec3 wp = p.xyz;
+
+
         // vector/ray from new camera origin to world position of intersection
         vec3 v = wp - origin;
 
@@ -44,13 +78,13 @@ void main() {
         // intersect v into the new camera plane.
         v *= dot(forward, forward) / d;
 
-        // determine the new coordinates on the camera plane ([0, 1])
+        // determine the new coordinates on the camera plane ([-ar, ar]x[-1, 1])
         vec2 uv = vec2(dot(sx, v) / aspect_ratio, dot(sy, v)) * 0.5 + 0.5;
 
         // new screen coordinates (floored)
-        ivec2 nsc = ivec2(size * uv);
+        ivec2 nsc = ivec2(round(size * uv));
 
         // store the previously rendered pixel in the new position
-        imageStore(outBuffer, nsc, imageLoad(inBuffer, idx));
+        imageStore(out_buf, nsc, imageLoad(in_buf, idx));
     }
 }

@@ -230,7 +230,7 @@ void main() {
                 light +=  materials[m1].emission * (brdf_weight_10 * rdd0 * rdd1 * max(0, dot(n1.xyz, r1)));
 
                 // contribution of light bounce from the second ray intersection
-                // light += l1 * (brdf_weight_10 * brdf_weight_1 * rdd0 * rdd1);
+                light += l1 * (brdf_weight_10 * brdf_weight_1 * rdd0 * rdd1);
 
                 // light = r1;
 
@@ -243,17 +243,17 @@ void main() {
             // light = vec3(length(camera_origin - p0.xyz));
         }
         
-        vec3 prev_light = imageLoad(light_prev_buf, idx).xyz;
+        vec4 prev_light = imageLoad(light_prev_buf, idx);
 
-        prev_light = min(vec3(1), max(vec3(0), prev_light));
+        // prev_light = min(vec3(1), max(vec3(0), prev_light));
         // light = min(vec3(1), light);
         // light = vec3(light.r);
 
-        // vec4 light_val = vec4(mix(light, prev_light, 0.99), 1.0);
-        vec4 light_val = vec4(light, 1.0);
+        vec4 light_val = vec4(mix(light, prev_light.xyz, prev_light.w * (1 - 1.0 / frame_idx)), 1.0);
+        // vec4 light_val = vec4(light, 1.0);
 
         imageStore(light_buf, idx, light_val);
-        imageStore(light_prev_buf, idx, light_val);
+        // imageStore(light_prev_buf, idx, light_val);
 
     }
 }

@@ -141,12 +141,17 @@ fn main() {
     });
 
     // build denoise compute pipeline
-    let _reproject_compute_pipeline = Arc::new({
+    let reproject_compute_pipeline = Arc::new({
         // raytracing shader
         use shaders::reproject_cs;
 
+        let spec_consts = reproject_cs::SpecializationConstants{
+            constant_1 : local_size_x,
+            constant_2 : local_size_y,
+        };
+
         let shader = reproject_cs::Shader::load(device.clone()).unwrap();
-        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
+        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
     });
 
     // build denoise compute pipeline
@@ -275,7 +280,7 @@ fn main() {
 
 
     let [width, height]: [u32; 2] = surface.window().inner_size().into();
-    let num_temp_buffers = 3;
+    let num_temp_buffers = 4;
     let mut gbuffer = GBuffer::new_buffers(device.clone(), compute_queue_family.clone(), width, height, num_temp_buffers);
     // let mut prev_gbuffer = GBuffer::new_buffers(device.clone(), compute_queue_family.clone(), width, height, 0);
 
@@ -643,7 +648,7 @@ fn main() {
                 let light_blend_pc = shaders::NormalBlendPushConstantData {
                     stride : 1,
                     normed : false as u32,
-                    scale : 500f32,
+                    scale : 10000000000f32,
                 };
                 
                 let normal_blend_layout = normal_blend_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
@@ -678,6 +683,23 @@ fn main() {
                 intersect_pc.frame_idx += 1;
                 intersect_pc.noise_idx = thread_rng().gen_range(0,intersect_pc.noise_frames);
                 old_position = position;
+
+                
+                let reproject_layout = reproject_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
+                let reproject_set = Arc::new(PersistentDescriptorSet::start(reproject_layout.clone())
+                    .add_image(gbuffer.temp_buffers[1].clone()).unwrap()
+                    .add_image(gbuffer.position0_buffer.clone()).unwrap()
+                    .add_image(gbuffer.temp_buffers[0].clone()).unwrap()
+                    .build().unwrap()
+                );
+                
+                let reproject_pc = shaders::ReprojectPushConstantData {
+                    origin : intersect_pc.camera_origin,
+                    forward : intersect_pc.camera_forward,
+                    up : intersect_pc.camera_up,
+                    _dummy0 : [0; 4],
+                    _dummy1 : [0; 4],
+                };
 
                 let intersect_layout = intersect_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
                 let intersect_set = Arc::new(PersistentDescriptorSet::start(intersect_layout.clone())
@@ -858,6 +880,8 @@ fn main() {
 
                 render_command_buffer_builder
                     .dispatch([(gbuffer.pre_trace_width - 1) / local_size_x + 1, (gbuffer.pre_trace_height - 1) / local_size_y + 1, 1], pre_trace_compute_pipeline.clone(), pre_trace_set.clone(), pre_trace_pc).unwrap()
+                    .clear_color_image(gbuffer.temp_buffers[0].clone(), vulkano::format::ClearValue::Float([0f32;4])).unwrap()
+                    .dispatch([block_dim_x, block_dim_y, 1], reproject_compute_pipeline.clone(), reproject_set.clone(), reproject_pc).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], normal_blend_compute_pipeline.clone(), normal_blend_set_a.clone(), normal_blend_pc).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], normal_blend_compute_pipeline.clone(), normal_blend_set_b.clone(), normal_blend_pc).unwrap()
