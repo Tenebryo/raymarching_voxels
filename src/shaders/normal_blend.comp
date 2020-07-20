@@ -10,6 +10,8 @@ layout(constant_id = 0) const int PATCH_DIST = 1;
 
 layout(push_constant) uniform NormalBlendPushConstantData {
     int stride;
+    bool normed;
+    float scale;
 };
 
 void main() {
@@ -32,29 +34,35 @@ void main() {
         }
 
         vec3 integral = vec3(0);
+        float weight = 0.0;
 
         for (int y = -PATCH_DIST; y <= PATCH_DIST; y++) {
             for (int x = -PATCH_DIST; x <= PATCH_DIST; x++) {
                 ivec2 nidx = idx + stride * ivec2(x, y);
 
                 vec4 n = imageLoad(normal_buf, nidx);
-                vec3 p = imageLoad(position_buf, nidx).xyz;
+                vec4 p = imageLoad(position_buf, nidx);
 
-                vec3 d = reference_position - p;
+                vec3 d = reference_position - p.xyz;
 
                 float dist = dot(d, d);
 
-                float w = max(0, 1 - 10 * dist) * n.w;
+                float w = max(0, 1 - scale * dist) * p.w;
 
                 if (dist > 0.0001) {
                     w = 0;
                 }
 
                 integral += n.xyz * w;
+                weight += w;
             }
         }
 
-        imageStore(out_normal_buf, idx, vec4(normalize(integral), 1));
+        if (normed) {
+            imageStore(out_normal_buf, idx, vec4(normalize(integral), 1));
+        } else {
+            imageStore(out_normal_buf, idx, vec4(integral * (1/weight), 1));
+        }
 
     }
 

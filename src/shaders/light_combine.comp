@@ -197,7 +197,7 @@ void main() {
 
             float d0 = length(r0);
 
-            float rdd0 = 1/(d0 * d0);
+            float rdd0 = 1;// 1/(d0 * d0);
 
             r0 = normalize(r0);
 
@@ -216,7 +216,7 @@ void main() {
 
                 float d1 = length(r1);
 
-                float rdd1 = 1 / (d1 * d1);
+                float rdd1 = min(1, 1 / (d1 * d1));
 
                 r1 = normalize(r1);
 
@@ -230,15 +230,17 @@ void main() {
                 light +=  materials[m1].emission * (brdf_weight_10 * rdd0 * rdd1 * max(0, dot(n1.xyz, r1)));
 
                 // contribution of light bounce from the second ray intersection
-                light += l1 * (brdf_weight_10 * brdf_weight_1 * rdd0 * rdd1);
+                // light += l1 * (brdf_weight_10 * brdf_weight_1 * rdd0 * rdd1);
 
                 // light = r1;
+
+                // light = vec3(rdd1);
             }
 
             // light = ambient_light + (l0 * rdd0 * brdf_weight_0);
             // light = ambient_light;
 
-            light = vec3(length(camera_origin - p0.xyz));
+            // light = vec3(length(camera_origin - p0.xyz));
         }
         
         vec3 prev_light = imageLoad(light_prev_buf, idx).xyz;

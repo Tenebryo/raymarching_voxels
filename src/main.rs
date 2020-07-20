@@ -275,8 +275,9 @@ fn main() {
 
 
     let [width, height]: [u32; 2] = surface.window().inner_size().into();
-    let mut gbuffer = GBuffer::new_buffers(device.clone(), compute_queue_family.clone(), width, height, 2);
-    let mut prev_gbuffer = GBuffer::new_buffers(device.clone(), compute_queue_family.clone(), width, height, 0);
+    let num_temp_buffers = 3;
+    let mut gbuffer = GBuffer::new_buffers(device.clone(), compute_queue_family.clone(), width, height, num_temp_buffers);
+    // let mut prev_gbuffer = GBuffer::new_buffers(device.clone(), compute_queue_family.clone(), width, height, 0);
 
     println!("Storage Images initialized");
     
@@ -606,8 +607,8 @@ fn main() {
 
                     // re-allocate buffer images
 
-                    gbuffer = GBuffer::new_buffers(device.clone(), compute_queue.family(), surface_width, surface_height, 2);
-                    prev_gbuffer = GBuffer::new_buffers(device.clone(), compute_queue.family(), surface_width, surface_height, 2);
+                    gbuffer = GBuffer::new_buffers(device.clone(), compute_queue.family(), surface_width, surface_height, num_temp_buffers);
+                    // prev_gbuffer = GBuffer::new_buffers(device.clone(), compute_queue.family(), surface_width, surface_height, 0);
 
                     recreate_swapchain = false;
                 }
@@ -633,12 +634,16 @@ fn main() {
                 //     wlock[0].direction = [time.sin(), time.cos(), 0.0];
                 // }
             
-                let normal_blend_pc_a = shaders::NormalBlendPushConstantData {
+                let normal_blend_pc = shaders::NormalBlendPushConstantData {
                     stride : 1,
+                    normed : true as u32,
+                    scale : 10f32,
                 };
                 
-                let normal_blend_pc_b = shaders::NormalBlendPushConstantData {
+                let light_blend_pc = shaders::NormalBlendPushConstantData {
                     stride : 1,
+                    normed : false as u32,
+                    scale : 500f32,
                 };
                 
                 let normal_blend_layout = normal_blend_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
@@ -652,6 +657,18 @@ fn main() {
                     .add_image(gbuffer.normal0b_buffer.clone()).unwrap()
                     .add_image(gbuffer.position0_buffer.clone()).unwrap()
                     .add_image(gbuffer.normal0_buffer.clone()).unwrap()
+                    .build().unwrap()
+                );
+                let light_blend_set_1a = Arc::new(PersistentDescriptorSet::start(normal_blend_layout.clone())
+                    .add_image(gbuffer.temp_buffers[1].clone()).unwrap()
+                    .add_image(gbuffer.position0_buffer.clone()).unwrap()
+                    .add_image(gbuffer.temp_buffers[2].clone()).unwrap()
+                    .build().unwrap()
+                );
+                let light_blend_set_1b = Arc::new(PersistentDescriptorSet::start(normal_blend_layout.clone())
+                    .add_image(gbuffer.temp_buffers[2].clone()).unwrap()
+                    .add_image(gbuffer.position0_buffer.clone()).unwrap()
+                    .add_image(swapchain_images[image_num].clone()).unwrap()
                     .build().unwrap()
                 );
                 
@@ -808,7 +825,8 @@ fn main() {
                     .add_image(gbuffer.light0_buffer.clone()).unwrap()
                     .add_image(gbuffer.light1_buffer.clone()).unwrap()
                     // output image
-                    .add_image(swapchain_images[image_num].clone()).unwrap()
+                    .add_image(gbuffer.temp_buffers[1].clone()).unwrap()
+                    // .add_image(swapchain_images[image_num].clone()).unwrap()
                     // temporal buffer
                     .add_image(gbuffer.temp_buffers[0].clone()).unwrap()
                     // voxel data
@@ -841,12 +859,14 @@ fn main() {
                 render_command_buffer_builder
                     .dispatch([(gbuffer.pre_trace_width - 1) / local_size_x + 1, (gbuffer.pre_trace_height - 1) / local_size_y + 1, 1], pre_trace_compute_pipeline.clone(), pre_trace_set.clone(), pre_trace_pc).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
-                    .dispatch([block_dim_x, block_dim_y, 1], normal_blend_compute_pipeline.clone(), normal_blend_set_a.clone(), normal_blend_pc_a).unwrap()
-                    .dispatch([block_dim_x, block_dim_y, 1], normal_blend_compute_pipeline.clone(), normal_blend_set_b.clone(), normal_blend_pc_b).unwrap()
+                    .dispatch([block_dim_x, block_dim_y, 1], normal_blend_compute_pipeline.clone(), normal_blend_set_a.clone(), normal_blend_pc).unwrap()
+                    .dispatch([block_dim_x, block_dim_y, 1], normal_blend_compute_pipeline.clone(), normal_blend_set_b.clone(), normal_blend_pc).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], light_bounce_compute_pipeline.clone(), light_bounce_set.clone(), light_bounce_pc).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_0.clone(), light_occlude_pc).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_1.clone(), light_occlude_pc).unwrap()
-                    .dispatch([block_dim_x, block_dim_y, 1], light_combine_compute_pipeline.clone(), light_combine_set.clone(), light_combine_pc).unwrap();
+                    .dispatch([block_dim_x, block_dim_y, 1], light_combine_compute_pipeline.clone(), light_combine_set.clone(), light_combine_pc).unwrap()
+                    .dispatch([block_dim_x, block_dim_y, 1], normal_blend_compute_pipeline.clone(), light_blend_set_1a.clone(), light_blend_pc).unwrap()
+                    .dispatch([block_dim_x, block_dim_y, 1], normal_blend_compute_pipeline.clone(), light_blend_set_1b.clone(), light_blend_pc).unwrap();
 
                 let render_command_buffer = render_command_buffer_builder.build().unwrap();
 
