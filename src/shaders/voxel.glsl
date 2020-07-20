@@ -83,6 +83,62 @@ vec2 project_cube(vec3 id, vec3 od, vec3 mn, vec3 mx, out uint incidence_min, ou
     return vec2(ts, te);
 }
 
+
+#define CONTOUR_MASK (4096-1)
+#define CONTOUR_NUM_NORMALS 25
+#define CONTOUR_NUM_OFFSETS 136
+#define CONTOUR_NUM (CONTOUR_NUM_NORMALS * CONTOUR_NUM_OFFSETS)
+
+// LUTs are generated using a Mathematica notebook in ./data
+const vec3 contour_lut_normals[CONTOUR_NUM_NORMALS] = {
+    { 0.5000,  0.5000,  0.5000},  {0.5000,  0.5000,  0.5000},  {0.5000,  0.5000,  0.5000},  { 0.5000,  0.5000,  0.5000},  { 0.5000,  0.5000,  0.0000},
+    { 0.0000,  0.5000,  0.5000},  {0.0000,  0.5000, -0.5000},  {0.5000,  0.0000,  0.5000},  { 0.5000,  0.0000, -0.5000},  { 0.5000,  0.5000,  0.0000},
+    { 0.5000, -0.5000,  0.0000},  {0.5000,  0.0000,  0.0000},  {0.0000,  0.5000,  0.0000},  { 0.0000,  0.0000,  0.5000},  { 0.5000,  0.1930, -0.3143},
+    {-0.3143,  0.5000, -0.1930},  {0.1930,  0.3143,  0.5000},  {0.5000,  0.1930,  0.3143},  {-0.3143,  0.5000,  0.1930},  {-0.1930, -0.3143,  0.5000},
+    { 0.5000, -0.1930, -0.3143},  {0.3143,  0.5000,  0.1930},  {0.1930, -0.3143,  0.5000},  { 0.5000, -0.1930,  0.3143},  { 0.3143,  0.5000, -0.1930}
+};
+
+const vec2 contour_lut_offsets[CONTOUR_NUM_OFFSETS] = {
+    vec2(-0.5000, -0.4375),  vec2(-0.5000, -0.3750),  vec2(-0.5000, -0.3125),  vec2(-0.5000, -0.2500),  vec2(-0.5000, -0.1875),  vec2(-0.5000, -0.1250),  vec2(-0.5000, -0.0625),  vec2(-0.5000,  0.0000),
+    vec2(-0.5000,  0.0625),  vec2(-0.5000,  0.1250),  vec2(-0.5000,  0.1875),  vec2(-0.5000,  0.2500),  vec2(-0.5000,  0.3125),  vec2(-0.5000,  0.3750),  vec2(-0.5000,  0.4375),  vec2(-0.5000,  0.5000),
+    vec2(-0.4375, -0.3750),  vec2(-0.4375, -0.3125),  vec2(-0.4375, -0.2500),  vec2(-0.4375, -0.1875),  vec2(-0.4375, -0.1250),  vec2(-0.4375, -0.0625),  vec2(-0.4375,  0.0000),  vec2(-0.4375,  0.0625),
+    vec2(-0.4375,  0.1250),  vec2(-0.4375,  0.1875),  vec2(-0.4375,  0.2500),  vec2(-0.4375,  0.3125),  vec2(-0.4375,  0.3750),  vec2(-0.4375,  0.4375),  vec2(-0.4375,  0.5000),  vec2(-0.3750, -0.3125),
+    vec2(-0.3750, -0.2500),  vec2(-0.3750, -0.1875),  vec2(-0.3750, -0.1250),  vec2(-0.3750, -0.0625),  vec2(-0.3750,  0.0000),  vec2(-0.3750,  0.0625),  vec2(-0.3750,  0.1250),  vec2(-0.3750,  0.1875),
+    vec2(-0.3750,  0.2500),  vec2(-0.3750,  0.3125),  vec2(-0.3750,  0.3750),  vec2(-0.3750,  0.4375),  vec2(-0.3750,  0.5000),  vec2(-0.3125, -0.2500),  vec2(-0.3125, -0.1875),  vec2(-0.3125, -0.1250),
+    vec2(-0.3125, -0.0625),  vec2(-0.3125,  0.0000),  vec2(-0.3125,  0.0625),  vec2(-0.3125,  0.1250),  vec2(-0.3125,  0.1875),  vec2(-0.3125,  0.2500),  vec2(-0.3125,  0.3125),  vec2(-0.3125,  0.3750),
+    vec2(-0.3125,  0.4375),  vec2(-0.3125,  0.5000),  vec2(-0.2500, -0.1875),  vec2(-0.2500, -0.1250),  vec2(-0.2500, -0.0625),  vec2(-0.2500,  0.0000),  vec2(-0.2500,  0.0625),  vec2(-0.2500,  0.1250),
+    vec2(-0.2500,  0.1875),  vec2(-0.2500,  0.2500),  vec2(-0.2500,  0.3125),  vec2(-0.2500,  0.3750),  vec2(-0.2500,  0.4375),  vec2(-0.2500,  0.5000),  vec2(-0.1875, -0.1250),  vec2(-0.1875, -0.0625),
+    vec2(-0.1875,  0.0000),  vec2(-0.1875,  0.0625),  vec2(-0.1875,  0.1250),  vec2(-0.1875,  0.1875),  vec2(-0.1875,  0.2500),  vec2(-0.1875,  0.3125),  vec2(-0.1875,  0.3750),  vec2(-0.1875,  0.4375),
+    vec2(-0.1875,  0.5000),  vec2(-0.1250, -0.0625),  vec2(-0.1250,  0.0000),  vec2(-0.1250,  0.0625),  vec2(-0.1250,  0.1250),  vec2(-0.1250,  0.1875),  vec2(-0.1250,  0.2500),  vec2(-0.1250,  0.3125),
+    vec2(-0.1250,  0.3750),  vec2(-0.1250,  0.4375),  vec2(-0.1250,  0.5000),  vec2(-0.0625,  0.0000),  vec2(-0.0625,  0.0625),  vec2(-0.0625,  0.1250),  vec2(-0.0625,  0.1875),  vec2(-0.0625,  0.2500),
+    vec2(-0.0625,  0.3125),  vec2(-0.0625,  0.3750),  vec2(-0.0625,  0.4375),  vec2(-0.0625,  0.5000),  vec2( 0.0000,  0.0625),  vec2( 0.0000,  0.1250),  vec2( 0.0000,  0.1875),  vec2( 0.0000,  0.2500),
+    vec2( 0.0000,  0.3125),  vec2( 0.0000,  0.3750),  vec2( 0.0000,  0.4375),  vec2( 0.0000,  0.5000),  vec2( 0.0625,  0.1250),  vec2( 0.0625,  0.1875),  vec2( 0.0625,  0.2500),  vec2( 0.0625,  0.3125),
+    vec2( 0.0625,  0.3750),  vec2( 0.0625,  0.4375),  vec2( 0.0625,  0.5000),  vec2( 0.1250,  0.1875),  vec2( 0.1250,  0.2500),  vec2( 0.1250,  0.3125),  vec2( 0.1250,  0.3750),  vec2( 0.1250,  0.4375),
+    vec2( 0.1250,  0.5000),  vec2( 0.1875,  0.2500),  vec2( 0.1875,  0.3125),  vec2( 0.1875,  0.3750),  vec2( 0.1875,  0.4375),  vec2( 0.1875,  0.5000),  vec2( 0.2500,  0.3125),  vec2( 0.2500,  0.3750),
+    vec2( 0.2500,  0.4375),  vec2( 0.2500,  0.5000),  vec2( 0.3125,  0.3750),  vec2( 0.3125,  0.4375),  vec2( 0.3125,  0.5000),  vec2( 0.3750,  0.4375),  vec2( 0.3750,  0.5000),  vec2( 0.4375,  0.5000)
+};
+
+// project a contour onto a ray
+// contours are described by in index in the range [0,4080) (or else the voxel does not have a contour)
+// divided into two independent tables [0,30)x[0,120)
+// rays are described by an origin and direction
+vec2 project_contour(uint contour, vec3 o, vec3 d) {
+    vec3 cnorm = contour_lut_normals[contour % CONTOUR_NUM_NORMALS];
+    vec2 coffs = contour_lut_offsets[contour / CONTOUR_NUM_NORMALS];
+
+    float a = 1.0 / dot(cnorm, d);
+    float b = dot(o, cnorm);
+    float c = (coffs.x - b) * a;
+    float d = (coffs.y - b) * a;
+
+    // not sure if this is faster or vec2(min(c,d), max(c,d))
+    if (c < d) {
+        return vec2(c,d);
+    } else {
+        return vec2(d,c);
+    }
+}
+
 bool voxel_valid_bit(uint parent, uint idx) {
     return voxels[parent].sub_voxels[idx] != 0;
 }
@@ -189,8 +245,6 @@ uint extract_child_slot(uvec3 pos, uint scale) {
 
 bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist, out uint incidence, out uint vid, out uint material, out uint return_state, out uint iterations) {
 
-
-
     const uint MAX_SCALE = (1<<MAX_DAG_DEPTH);
 
     const ivec3 incidence_axis[3] = {
@@ -211,7 +265,7 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
     vec3 ds = sign(d);
 
     d *= ds;
-    o = o * ds + (1 - ds) / 2;
+    o = o * ds + (1 - ds) * 0.5;
 
     o *= MAX_SCALE;
 
