@@ -119,23 +119,24 @@ const vec2 contour_lut_offsets[CONTOUR_NUM_OFFSETS] = {
 };
 
 // project a contour onto a ray
-// contours are described by in index in the range [0,4080) (or else the voxel does not have a contour)
+// contours are described by in index in the range [0,3600) (or else the voxel does not have a contour)
 // divided into two independent tables [0,30)x[0,120)
 // rays are described by an origin and direction
 vec2 project_contour(uint contour, vec3 o, vec3 d) {
     vec3 cnorm = contour_lut_normals[contour % CONTOUR_NUM_NORMALS];
     vec2 coffs = contour_lut_offsets[contour / CONTOUR_NUM_NORMALS];
 
-    float a = 1.0 / dot(cnorm, d);
-    float b = dot(o, cnorm);
-    float c = (coffs.x - b) * a;
-    float d = (coffs.y - b) * a;
+    // what happens when this overflows?
+    float v0 = 1.0 / dot(cnorm, d);
+    float v1 = dot(o, cnorm);
+    float v2 = (coffs.x - v1) * v0;
+    float v3 = (coffs.y - v1) * v0;
 
     // not sure if this is faster or vec2(min(c,d), max(c,d))
-    if (c < d) {
-        return vec2(c,d);
+    if (v2 < v3) {
+        return vec2(v2,v3);
     } else {
-        return vec2(d,c);
+        return vec2(v2,v3);
     }
 }
 
