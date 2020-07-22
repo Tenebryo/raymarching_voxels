@@ -91,12 +91,3 @@ pub use light_bounce_cs::ty::PointLight;
 pub use light_bounce_cs::ty::DirectionalLight;
 pub use light_bounce_cs::ty::SpotLight;
 pub use light_bounce_cs::ty::Material;
-
-// these redefinition shenanigans are necessary because serde can't quite derive
-// serialize/deserialize for types in another module that are used in Vec fields
-use serde::{Serialize, Deserialize};
-#[derive(Copy, Clone, Serialize, Deserialize, Debug)]
-#[repr(C)]
-pub struct VChildDescriptor {
-    pub sub_voxels : [i32; 8],
-}

@@ -457,22 +457,22 @@ fn main() {
     // parse voxel goemetry data
     let mut svdag_geometry_data = {
 
-        let chunk_bytes = include_bytes!("../data/bunny.svdag");
+        let chunk_bytes = include_bytes!("../data/teapot.svdag");
 
         bincode::deserialize::<vox::VoxelChunk>(chunk_bytes).expect("Deserialization Failed")
     };
 
-    // svdag_geometry_data.multiply_root_by_8();
-    // svdag_geometry_data.multiply_root_by_8();
-    // svdag_geometry_data.multiply_root_by_8();
-    // svdag_geometry_data.multiply_root_by_8();
+    // svdag_geometry_data.make_222_grid();
+    // svdag_geometry_data.make_222_grid();
+    // svdag_geometry_data.make_222_grid();
+    // svdag_geometry_data.make_222_grid();
 
     // calculate the lod materials
     svdag_geometry_data.calculate_lod_materials();
 
     // load the voxel data onto the GPU
     let svdag_geometry_buffer = {
-        CpuAccessibleBuffer::<[shaders::VChildDescriptor]>::from_iter(device.clone(), BufferUsage::all(), false, svdag_geometry_data.voxels.iter().cloned()).unwrap()
+        CpuAccessibleBuffer::<[vox::VChildDescriptor]>::from_iter(device.clone(), BufferUsage::all(), false, svdag_geometry_data.voxels.iter().cloned()).unwrap()
     };
 
     let svdag_material_buffer = {

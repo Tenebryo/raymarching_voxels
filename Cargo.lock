@@ -846,6 +846,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "obj"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "946aae3c563fa19dbbce5117313f445f6ec4b8c1add1194395019c48bbc0345c"
+
+[[package]]
 name = "objc"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1478,6 +1484,7 @@ dependencies = [
  "env_logger",
  "log",
  "nalgebra",
+ "obj",
  "opensimplex",
  "png",
  "rand 0.7.3",
