@@ -8,7 +8,7 @@ use std::collections::HashSet;
 
 use serde::{Serialize, Deserialize};
 
-const CHUNK_DIM : usize = 64;
+pub const MAX_DAG_DEPTH : usize = 16;
 
 type Vec3 = Vector3<f32>;
 
@@ -18,6 +18,11 @@ pub enum Voxel {
     Empty,
     Leaf(i32),
     Branch(i32)
+}
+
+pub struct Triangle {
+    pub points : [Vec3; 3],
+    pub normal : Vec3,
 }
 
 // these redefinition shenanigans are necessary because serde can't quite derive
@@ -101,144 +106,210 @@ impl VoxelChunk {
     }
 
     /// process a 3D array (`data` with dimensions `dim`) into a SVDAG, mapping values to materials using `f`
-    pub fn from_dense_data_fn<S, F>(data : &[S], dim : [usize; 3], f_mat : F) -> Self 
-    where S : Integer + Copy, F : Fn(S) -> Voxel {
+    pub fn from_dense_voxels(data : &[i32], dim : [usize; 3]) -> Self {
         
-        let depth = log_2(dim.iter().cloned().max().unwrap_or(0));
+        assert!(dim[0] > 0 && dim[1] > 0 && dim[2] > 0);
 
-        let msize = 1 << depth;
+        let depth = log_2(dim.iter().cloned().max().unwrap_or(0) - 1) as usize + 1;
 
-        // hashmap is used to deduplicate identical voxel sub-DAGs
-        let mut dedup_vox = HashMap::new();
+        assert!(depth < MAX_DAG_DEPTH, "Depth is too large: {} >= {}", depth, MAX_DAG_DEPTH);
 
-        // cache stores the previous
-        let mut cache = data.iter().map(|&x| f_mat(x)).collect::<Vec<Voxel>>();
-        let unique_materials = cache.iter().fold(HashSet::new(), |mut s, &x| {s.insert(x); s});
+        let size = 1 << depth;
 
-        // insert deduplication entries for leaf voxels
-        // dedup_vox.insert([Voxel::Empty; 8], Voxel::Empty);
-        for mat in unique_materials {
-            dedup_vox.insert([mat; 8], mat);
-        }
-    
-
-        // the starting ID for voxels
-        let mut id = 0i32;
-
-        let mut voxels = vec![];
-        let mut edges = vec![];
-        let mut no_edges = vec![];
-        let mut parents : Vec<Vec<i32>> = vec![];
-
-        // first step: deduplicate voxels. 
-        for lsize in 1..=depth {
-            let s = 1 << lsize;
-            let mut level_cache = vec![];
-
-            let ldim = [(dim[0] - 1) * 2 / s + 1, (dim[1] - 1) * 2 / s + 1, (dim[2] - 1) * 2 / s + 1];
-
-            for z in 0..(msize / s) {
-                for y in 0..(msize / s) {
-                    for x in 0..(msize / s) {
-
-                        let x = x + x;
-                        let y = y + y;
-                        let z = z + z;
-
-                        let children = [
-                            array3d_get(&cache, ldim, [x,   y,   z  ]).unwrap_or(Voxel::Empty),
-                            array3d_get(&cache, ldim, [x+1, y,   z  ]).unwrap_or(Voxel::Empty),
-                            array3d_get(&cache, ldim, [x,   y+1, z  ]).unwrap_or(Voxel::Empty),
-                            array3d_get(&cache, ldim, [x+1, y+1, z  ]).unwrap_or(Voxel::Empty),
-                            array3d_get(&cache, ldim, [x,   y,   z+1]).unwrap_or(Voxel::Empty),
-                            array3d_get(&cache, ldim, [x+1, y,   z+1]).unwrap_or(Voxel::Empty),
-                            array3d_get(&cache, ldim, [x,   y+1, z+1]).unwrap_or(Voxel::Empty),
-                            array3d_get(&cache, ldim, [x+1, y+1, z+1]).unwrap_or(Voxel::Empty)
-                        ];
-
-                        dedup_vox.entry(children)
-                            .and_modify(|id| level_cache.push(*id))
-                            .or_insert_with(|| {
-                                let mut ve = 0;
-                                for c in children.iter() {
-                                    match *c {
-                                        Voxel::Empty | Voxel::Leaf(_) => (),
-                                        Voxel::Branch(cid) => {
-                                            ve += 1;
-                                            parents[cid as usize].push(id);
-                                        },
-                                    }
-                                }
-                                voxels.push(build_child_descriptor_from_children(children));
-                                edges.push(ve);
-                                parents.push(vec![]);
-                                if ve == 0 {
-                                    no_edges.push(id);
-                                }
-
-                                let new_id = Voxel::Branch(id);
-                                id += 1;
-                                level_cache.push(new_id);
-
-                                new_id
-                            });
-                    }
-                }
+        fn recursive_create_dense(
+            s : &mut VoxelChunk, d : usize, min : [usize; 3], size : usize, 
+            data : &[i32], dim : [usize; 3],
+            dedup : &mut HashMap<VChildDescriptor, i32>
+        ) -> i32 {
+            if min[0] >= dim[0] || min[1] >= dim[1] || min[2] >= dim[2] {
+                // air if the voxel does not intersect the voxel data
+                return 0;
+            }
+            
+            if size <= 1 {
+                // once we reach size 1, take the material from the data
+                let v = data[min[0] + dim[0] * (min[1] + dim[1] * min[2])];
+                // prevent awful fractal voxel graphs
+                return -v.abs();
             }
 
-            cache = level_cache;
-        }
+            const box_offsets : [[usize; 3]; 8] = [
+                [0, 0, 0],
+                [1, 0, 0],
+                [0, 1, 0],
+                [1, 1, 0],
+                [0, 0, 1],
+                [1, 0, 1],
+                [0, 1, 1],
+                [1, 1, 1]
+            ];
 
+            let mut voxel = VChildDescriptor{
+                sub_voxels : [0; 8],
+            };
 
-        let n = voxels.len();
+            let half_size = size >> 1;
 
-        let mut topo_perm = vec![];
-        let mut topo_perm_inv = (0..n).map(|_| 0i32).collect::<Vec<_>>();
+            let mut is_uniform = true;
 
-        let mut j = n as i32 - 1;
-
-        // second step: voxel topological sorting to get final layout (particularly with root voxel at 0).
-        while let Some(i) = no_edges.pop() {
-            topo_perm.push(i);
-            topo_perm_inv[i as usize] = j;
-            j -= 1;
-            for &p in &parents[i as usize] {
-                // check valid = 1 and leaf = 0
-                edges[p as usize] -= 1;
-                if edges[p as usize] == 0 {
-                    no_edges.push(p);
-                }
-            }
-        }
-
-        // third step: permute all the voxels and their child indices based on their topological sort
-        let old_voxels = voxels;
-        voxels = Vec::with_capacity(n);
-
-        for &i in topo_perm.iter().rev() {
-            let mut v = old_voxels[i as usize];
             for i in 0..8 {
-                // check that it is a subvoxel
-                if v.sub_voxels[i] > 0 {
-                    // permute the subvoxel index
-                    v.sub_voxels[i] = topo_perm_inv[v.sub_voxels[i] as usize - 1] + 1;
+                let bmin = [
+                    min[0] + box_offsets[i][0] * half_size,
+                    min[1] + box_offsets[i][1] * half_size,
+                    min[2] + box_offsets[i][2] * half_size
+                ];
+
+                voxel.sub_voxels[i] = recursive_create_dense(s, d - 1, bmin, half_size, data, dim, dedup);
+
+                if voxel.sub_voxels[i] != voxel.sub_voxels[0] || voxel.sub_voxels[i] > 0 {
+                    // the subvoxels are not all the same leaf node, so this voxel is not uniform
+                    is_uniform = false;
                 }
             }
-            voxels.push(v);
+
+            if is_uniform {
+                return voxel.sub_voxels[0];
+            }
+
+            if let Some(&id) = dedup.get(&voxel) {
+                // this node is a duplicate
+                id
+            } else {
+                // this node is new, so add it
+                s.voxels.push(voxel);
+                let id = s.voxels.len() as i32;
+                dedup.insert(voxel, id);
+                id
+            }
         }
 
-        Self {voxels,lod_materials : vec![]}
+        let mut chunk = VoxelChunk::empty();
+        chunk.voxels.clear();
+        // we build a list of unique voxels and store them in here
+        let mut dedup : HashMap<VChildDescriptor, i32> = HashMap::new();
+
+        recursive_create_dense(&mut chunk, depth, [0,0,0], size, data, dim, &mut dedup);
+
+        chunk.voxels.reverse();
+
+        //fixup the subvoxel pointers (we reversed the order)
+        let n = chunk.voxels.len() as i32;
+        for i in 0..(chunk.voxels.len()) {
+            for j in 0..8 {
+                let sv = chunk.voxels[i].sub_voxels[j];
+                if sv > 0 {
+                    let svi = n - sv + 1;
+                    chunk.voxels[i].sub_voxels[j] = svi;
+                }
+            }
+        }
+
+        chunk
+    }
+
+    /// process an implicit 3D array into a DAG.
+    pub fn from_dense_implicit<F : FnMut(usize, usize, usize) -> i32>(depth : usize, mut implicit : F) -> Self {
+
+        assert!(depth < MAX_DAG_DEPTH, "Depth is too large: {} >= {}", depth, MAX_DAG_DEPTH);
+
+        let size = 1 << depth;
+
+        fn recursive_create_dense_implicit<F : FnMut(usize, usize, usize) -> i32>(
+            s : &mut VoxelChunk, min : [usize; 3], size : usize, implicit : &mut F,
+            dedup : &mut HashMap<VChildDescriptor, i32>
+        ) -> i32 {
+
+            if size <= 1 {
+                // once we reach size 1, evaluate the material at the implicit surface
+                let v = implicit(min[0], min[1], min[2]);
+                // prevent awful fractal voxel graphs
+                return -v.abs();
+            }
+
+            const box_offsets : [[usize; 3]; 8] = [
+                [0, 0, 0],
+                [1, 0, 0],
+                [0, 1, 0],
+                [1, 1, 0],
+                [0, 0, 1],
+                [1, 0, 1],
+                [0, 1, 1],
+                [1, 1, 1]
+            ];
+
+            let mut voxel = VChildDescriptor{
+                sub_voxels : [0; 8],
+            };
+
+            let half_size = size >> 1;
+
+            let mut is_uniform = true;
+
+            for i in 0..8 {
+                let bmin = [
+                    min[0] + box_offsets[i][0] * half_size,
+                    min[1] + box_offsets[i][1] * half_size,
+                    min[2] + box_offsets[i][2] * half_size
+                ];
+
+                voxel.sub_voxels[i] = recursive_create_dense_implicit(s, bmin, half_size, implicit, dedup);
+
+                if voxel.sub_voxels[i] != voxel.sub_voxels[0] || voxel.sub_voxels[i] > 0 {
+                    // the subvoxels are not all the same leaf node, so this voxel is not uniform
+                    is_uniform = false;
+                }
+            }
+
+            
+            if is_uniform {
+                return voxel.sub_voxels[0];
+            }
+
+            if let Some(&id) = dedup.get(&voxel) {
+                // this node is a duplicate
+                id
+            } else {
+                // this node is new, so add it
+                s.voxels.push(voxel);
+                let id = s.voxels.len() as i32;
+                dedup.insert(voxel, id);
+                id
+            }
+        }
+
+        let mut chunk = VoxelChunk::empty();
+        chunk.voxels.clear();
+        // we build a list of unique voxels and store them in here
+        let mut dedup : HashMap<VChildDescriptor, i32> = HashMap::new();
+
+        recursive_create_dense_implicit(&mut chunk, [0,0,0], size, &mut implicit, &mut dedup);
+
+        chunk.voxels.reverse();
+
+        //fixup the subvoxel pointers (we reversed the order)
+        let n = chunk.voxels.len() as i32;
+        for i in 0..(chunk.voxels.len()) {
+            for j in 0..8 {
+                let sv = chunk.voxels[i].sub_voxels[j];
+                if sv > 0 {
+                    let svi = n - sv + 1;
+                    chunk.voxels[i].sub_voxels[j] = svi;
+                }
+            }
+        }
+
+        chunk
     }
 
     /// Convert an obj file into a voxel chunk format.
     /// Only places voxels intersect triangles will be made solid
-    pub fn from_obj_shell(depth : usize, triangles: &[[Vec3;3]], corner : Vec3, size : f32) -> VoxelChunk {
-        assert!(depth < 16, "Depth is too large: {} >= 16", depth);
+    pub fn from_obj_shell(depth : usize, triangles: &[Triangle], corner : Vec3, size : f32) -> VoxelChunk {
+        assert!(depth < MAX_DAG_DEPTH, "Depth is too large: {} >= {}", depth, MAX_DAG_DEPTH);
 
 
         fn recursive_create_shell(
             s : &mut VoxelChunk, d : usize, min : Vec3, size : f32, 
-            tris : &[[Vec3; 3]], indexes : &mut Vec<usize>, start : usize, 
+            tris : &[Triangle], indexes : &mut Vec<usize>, start : usize, 
             dedup : &mut HashMap<VChildDescriptor, i32>
         ) -> i32 {
 
@@ -281,7 +352,7 @@ impl VoxelChunk {
                 let bmax = bmin + Vec3::new(size * 0.5, size * 0.5, size * 0.5);
 
                 for j in start..end {
-                    if aabb_triangle_test(bmin, bmax, tris[indexes[j]]) {
+                    if aabb_triangle_test(bmin, bmax, &tris[indexes[j]]) {
                         indexes.push(indexes[j]);
                     }
                 }
@@ -304,7 +375,10 @@ impl VoxelChunk {
         }
 
         let mut chunk = VoxelChunk::empty();
+        chunk.voxels.clear();
+        // we build a list of unique voxels and store them in here
         let mut dedup : HashMap<VChildDescriptor, i32> = HashMap::new();
+        // indexes acts as a simple growing allocator for the recursion
         let mut indexes = (0..(triangles.len())).collect::<Vec<_>>();
 
         recursive_create_shell(&mut chunk, depth, corner, size, &triangles, &mut indexes, 0, &mut dedup);
@@ -390,6 +464,7 @@ impl VoxelChunk {
         let mut marked = (0..n).map(|_| false).collect::<Vec<_>>();
 
         // helper function to traverse the hierarchy in depth-first, post-traversal order
+        // returns the index of the deduplicated voxel [1 indexed]
         fn recurse_dedup(s : &mut VoxelChunk, idx : i32, marks : &mut Vec<bool>, dedup : &mut HashMap<VChildDescriptor, i32>) -> i32 {
             for j in 0..8 {
                 let sv = s.voxels[idx as usize].sub_voxels[j];
@@ -409,7 +484,7 @@ impl VoxelChunk {
                 }
             }
 
-            let mut ret = idx;
+            let mut ret = idx + 1;
             dedup.entry(s.voxels[idx as usize])
                 .and_modify(|nidx| {
                     // if this voxel is a now duplicate after deduplicating children,
@@ -419,7 +494,7 @@ impl VoxelChunk {
                 .or_insert_with(|| {
                     // otherwise, this is a now a unique voxel
                     marks[idx as usize] = true;
-                    idx
+                    ret
                 });
 
             ret
@@ -716,7 +791,7 @@ impl Integer for u32 {}
 // ###############################################################################################################################################
 // ###############################################################################################################################################
 
-fn aabb_triangle_test(aabb_min : Vec3, aabb_max : Vec3, tri : [Vec3; 3]) -> bool {
+fn aabb_triangle_test(aabb_min : Vec3, aabb_max : Vec3, triangle : &Triangle) -> bool {
 
     let box_normals = [
         Vec3::new(1.0,0.0,0.0),
@@ -724,6 +799,7 @@ fn aabb_triangle_test(aabb_min : Vec3, aabb_max : Vec3, tri : [Vec3; 3]) -> bool
         Vec3::new(0.0,0.0,1.0)
     ];
 
+    let tri = &triangle.points;
 
     fn project(points : &[Vec3], axis : Vec3) -> (f32, f32) {
         let mut min = f32::MAX;
@@ -740,7 +816,7 @@ fn aabb_triangle_test(aabb_min : Vec3, aabb_max : Vec3, tri : [Vec3; 3]) -> bool
     }
 
     for i in 0..3 {
-        let (min, max) = project(&tri, box_normals[i]);
+        let (min, max) = project(tri, box_normals[i]);
 
         if max < aabb_min[i] || min > aabb_max[i] {
             return false; // No intersection possible.
@@ -765,7 +841,7 @@ fn aabb_triangle_test(aabb_min : Vec3, aabb_max : Vec3, tri : [Vec3; 3]) -> bool
         tri[2] - tri[0]
     ];
 
-    let tri_norm = tri_edges[0].cross(tri_edges[1]).normalize();
+    let tri_norm = triangle.normal;
 
     let tri_offset = tri_norm.dot(tri[0]);
     let (min, max) = project(&box_vertices, tri_norm);
@@ -781,7 +857,7 @@ fn aabb_triangle_test(aabb_min : Vec3, aabb_max : Vec3, tri : [Vec3; 3]) -> bool
             // The box normals are the same as it's edge tangents
             let axis = tri_edges[i].cross(box_normals[j]);
             let (bmin, bmax) = project(&box_vertices, axis);
-            let (tmin, tmax) = project(&tri, axis);
+            let (tmin, tmax) = project(tri, axis);
             if bmax < tmin || bmin > tmax {
                 return false; // No intersection possible
             }
@@ -791,57 +867,6 @@ fn aabb_triangle_test(aabb_min : Vec3, aabb_max : Vec3, tri : [Vec3; 3]) -> bool
     // No separating axis found.
     return true;
 }
-
-
-        /*
-        
-bool IsIntersecting(IAABox box, ITriangle triangle)
-{
-    double triangleMin, triangleMax;
-    double boxMin, boxMax;
-
-    // Test the box normals (x-, y- and z-axes)
-    var boxNormals = new IVector[] {
-        new Vector(1,0,0),
-        new Vector(0,1,0),
-        new Vector(0,0,1)
-    };
-    for (int i = 0; i < 3; i++)
-    {
-        IVector n = boxNormals[i];
-        Project(triangle.Vertices, boxNormals[i], out triangleMin, out triangleMax);
-        if (triangleMax < box.Start.Coords[i] || triangleMin > box.End.Coords[i])
-            return false; // No intersection possible.
-    }
-
-    // Test the triangle normal
-    double triangleOffset = triangle.Normal.Dot(triangle.A);
-    Project(box.Vertices, triangle.Normal, out boxMin, out boxMax);
-    if (boxMax < triangleOffset || boxMin > triangleOffset)
-        return false; // No intersection possible.
-
-    // Test the nine edge cross-products
-    IVector[] triangleEdges = new IVector[] {
-        triangle.A.Minus(triangle.B),
-        triangle.B.Minus(triangle.C),
-        triangle.C.Minus(triangle.A)
-    };
-    for (int i = 0; i < 3; i++)
-    for (int j = 0; j < 3; j++)
-    {
-        // The box normals are the same as it's edge tangents
-        IVector axis = triangleEdges[i].Cross(boxNormals[j]);
-        Project(box.Vertices, axis, out boxMin, out boxMax);
-        Project(triangle.Vertices, axis, out triangleMin, out triangleMax);
-        if (boxMax <= triangleMin || boxMin >= triangleMax)
-            return false; // No intersection possible
-    }
-
-    // No separating axis found.
-    return true;
-}
-
-         */
 
 
 // ###############################################################################################################################################
@@ -854,7 +879,7 @@ bool IsIntersecting(IAABox box, ITriangle triangle)
 
 
 #[test]
-fn voxel_chunk_construct_obj_shell() {
+fn test_voxel_dag_obj_shell() {
     use obj::*;
     use std::path::Path;
     use std::fs;
@@ -875,11 +900,15 @@ fn voxel_chunk_construct_obj_shell() {
                     let v1 = obj_data.data.position[poly.0[v-1].0];
                     let v2 = obj_data.data.position[poly.0[v].0];
 
-                    triangles.push([
-                        Vec3::new(v0[0], v0[1], v0[2]),
-                        Vec3::new(v1[0], v1[1], v1[2]),
-                        Vec3::new(v2[0], v2[1], v2[2])
-                    ]);
+
+                    let v0 = Vec3::new(v0[0], v0[1], v0[2]);
+                    let v1 = Vec3::new(v1[0], v1[1], v1[2]);
+                    let v2 = Vec3::new(v2[0], v2[1], v2[2]);
+                    
+                    triangles.push(Triangle{
+                        points : [v0, v1, v2],
+                        normal : (v0 - v1).cross(v1 - v2),
+                    });
                 }
             }
         }
@@ -907,12 +936,11 @@ fn voxel_chunk_construct_obj_shell() {
     use std::time::*;
 
     let start = Instant::now();
-    let vchunk = VoxelChunk::from_obj_shell(9, &triangles, min, max_size);
+    let mut vchunk = VoxelChunk::from_obj_shell(9, &triangles, min, max_size);
     let elapsed = start.elapsed();
 
+    println!("Time to voxelize: {:?}", elapsed);
     println!("DAG nodes: {}", vchunk.len());
-
-    println!("Time to assemble: {:?}", elapsed);
 
     let serialized = bincode::serialize(&vchunk).unwrap();
 
@@ -926,40 +954,50 @@ fn test_aabb_tri_intersection() {
         let min = Vec3::new(-10.0, -10.0, -10.0);
         let max = Vec3::new(10.0, 10.0, 10.0);
 
-        let tri = [
-            Vec3::new(12.0,9.0,9.0),
-            Vec3::new(9.0,12.0,9.0),
-            Vec3::new(19.0,19.0,20.0)
-        ];
+        let v0 = Vec3::new(12.0,9.0,9.0);
+        let v1 = Vec3::new(9.0,12.0,9.0);
+        let v2 = Vec3::new(19.0,19.0,20.0);
 
-        assert!(!aabb_triangle_test(min, max, tri));
+        let tri = Triangle {
+            points : [v0, v1, v2],
+            normal : (v0 - v1).cross(v1 - v2),
+        };
+
+        assert!(!aabb_triangle_test(min, max, &tri));
     }
     
     {
         let min = Vec3::new(0.0, 0.0, 0.0);
         let max = Vec3::new(0.25, 0.25, 0.25);
 
-        let tri = [
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-            Vec3::new(0.0, 0.0, 1.0)
-        ];
+        let v0 = Vec3::new(1.0, 0.0, 0.0);
+        let v1 = Vec3::new(0.0, 1.0, 0.0);
+        let v2 = Vec3::new(0.0, 0.0, 1.0);
+    
+        let mut tri = Triangle{
+            points : [v0, v1, v2],
+            normal : (v0 - v1).cross(v1 - v2),
+        };
 
-        assert!(!aabb_triangle_test(min, max, tri));
+        assert!(!aabb_triangle_test(min, max, &tri));
     }
 }
 
 #[test]
-fn voxel_chunk_construct_tri_shell() {
+fn test_voxel_dag_tri_shell() {
     use std::path::Path;
     use std::fs;
+    
+    let v0 = Vec3::new(1.0, 0.0, 0.0);
+    let v1 = Vec3::new(0.0, 1.0, 0.0);
+    let v2 = Vec3::new(0.0, 0.0, 1.0);
 
-
-    let mut triangles = vec![[
-        Vec3::new(1.0, 0.0, 0.0),
-        Vec3::new(0.0, 1.0, 0.0),
-        Vec3::new(0.0, 0.0, 1.0)
-    ]];
+    let mut triangles = vec![
+        Triangle{
+            points : [v0, v1, v2],
+            normal : (v0 - v1).cross(v1 - v2),
+        }
+    ];
 
     let min = Vec3::new(0.0, 0.0, 0.0);
     let size = 1.0;
@@ -984,12 +1022,13 @@ fn voxel_chunk_construct_tri_shell() {
 
 /// Construct an SVDAG of a ct-scan of the stanford bunny;
 #[test]
-fn voxel_chunk_compress_bunny() {
+fn test_voxel_dag_bunny() {
     let mut data : Vec<u16> = Vec::with_capacity(512 *  512 * 361);
 
     use std::path::Path;
     use std::fs;
     use std::u16;
+    use std::time::*;
 
     let dir = Path::new("./data/bunny/");
     if dir.is_dir() {
@@ -1027,7 +1066,18 @@ fn voxel_chunk_compress_bunny() {
         }
     }
 
-    let chunk = VoxelChunk::from_dense_data_fn(&data, [512, 512, 361], |v| if v > 0x06ff {Voxel::Leaf(1)} else {Voxel::Empty});
+    // threshold for the ct scan data
+    let data = data.iter().map(|&v| if v > 0x06ff {1i32} else {0i32}).collect::<Vec<i32>>();
+
+    let start = Instant::now();
+
+    let mut chunk = VoxelChunk::from_dense_voxels(&data, [512, 512, 361]);
+
+    let runtime = start.elapsed();
+
+    
+    println!("Compression took {:?}", runtime);
+    chunk.topological_sort();
 
     let out_path = Path::new("./data/bunny.svdag");
         
@@ -1042,15 +1092,58 @@ fn voxel_chunk_compress_bunny() {
     println!("Num Voxels: {} (from {})", chunk.voxels.len(), 512*512*361);
 }
 
+#[test]
+fn test_voxel_dag_implicit() {
+    use std::time::*;
+    use std::fs;
+    use bincode;
+    use std::path::*;
+
+    println!("Compressing implicit gyroid...");
+
+    let start = Instant::now();
+
+    let mut chunk = VoxelChunk::from_dense_implicit(8, |x, y, z| {
+        let scale = 1.0/16.0;
+        let threshold = 0.05;
+
+        let x = x as f32 * scale;
+        let y = y as f32 * scale;
+        let z = z as f32 * scale;
+
+        let sdf = x.sin() * y.cos() + y.sin() + z.cos() + z.sin() * x.cos();
+
+        if sdf.abs() < threshold {
+            1
+        } else {
+            0
+        }
+    });
+
+    let runtime = start.elapsed();
+    
+    println!("Compression took {:?}", runtime);
+
+    let out_path = Path::new("./data/gyroid.svdag");
+        
+    println!("Writing File... ({:?})", out_path);
+
+    let serialized = bincode::serialize(&chunk).unwrap();
+
+    fs::write(out_path, serialized).unwrap();
+
+    println!("Num Voxels: {} (from {})", chunk.voxels.len(), 512*512*512);
+}
+
 
 /// This test constructs a simple sphere as a test
 #[test]
-fn voxel_chunk_compress_sphere() {
+fn test_voxel_dag_sphere() {
 
     use std::path::Path;
     use std::fs;
 
-    let data : [u8; 8*8*8]= [
+    let data : [i32; 8*8*8]= [
         0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0,
@@ -1124,7 +1217,7 @@ fn voxel_chunk_compress_sphere() {
         0, 0, 0, 0, 0, 0, 0, 0
     ];
 
-    let chunk = VoxelChunk::from_dense_data_fn(&data, [8, 8, 8], |v| if v == 1 {Voxel::Leaf(1)} else {Voxel::Empty});
+    let chunk = VoxelChunk::from_dense_voxels(&data, [8, 8, 8]);
 
     let out_path = Path::new("./data/sphere.svdag");
 
@@ -1144,19 +1237,19 @@ fn voxel_chunk_compress_sphere() {
 
 /// This test constructs a simple sphere as a test
 #[test]
-fn voxel_chunk_compress_checkers() {
+fn test_voxel_dag_checkers() {
 
     use std::path::Path;
     use std::fs;
     for i in 1..6 {
         let d = 1 << i;
-        let data : Vec<u16> = (0..d).map(|z| {
+        let data : Vec<i32> = (0..d).map(|z| {
             (0..d).map(move |y| {
                 (0..d).map(move |x| (x + y + z) % 2)
             }).flatten()
         }).flatten().collect();
 
-        let chunk = VoxelChunk::from_dense_data_fn(&data, [d as usize, d as usize, d as usize], |v| if v == 1 {Voxel::Leaf(1)} else {Voxel::Empty});
+        let chunk = VoxelChunk::from_dense_voxels(&data, [d as usize, d as usize, d as usize]);
 
         let path = format!("./data/checker{:0>2}.svdag", d);
 
@@ -1178,24 +1271,23 @@ fn voxel_chunk_compress_checkers() {
     }
 }
 
-/// This test constructs a simple sphere as a test
 #[test]
-fn voxel_chunk_compress_inner_cube() {
+fn test_voxel_dag_octohedron() {
 
     use std::path::Path;
     use std::fs;
     for i in 1..6 {
         let d = 1 << i;
         let dd = d >> 1;
-        let data : Vec<u16> = (0..d).map(|z| {
+        let data : Vec<i32> = (0..d).map(|z| {
             (0..d).map(move |y| {
                 (0..d).map(move |x| if (x == dd || x == dd - 1) && (y == dd || y == dd - 1) && (z == dd || z == dd - 1) {1} else {0})
             }).flatten()
         }).flatten().collect();
 
-        let chunk = VoxelChunk::from_dense_data_fn(&data, [d as usize, d as usize, d as usize], |v| if v == 1 {Voxel::Leaf(1)} else {Voxel::Empty});
+        let chunk = VoxelChunk::from_dense_voxels(&data, [d as usize, d as usize, d as usize]);
 
-        let path = format!("./data/inner_cube{:0>2}.svdag", d);
+        let path = format!("./data/octohedron{:0>2}.svdag", d);
 
         let out_path = Path::new(&path);
 
