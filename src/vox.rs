@@ -879,12 +879,12 @@ fn aabb_triangle_test(aabb_min : Vec3, aabb_max : Vec3, triangle : &Triangle) ->
 
 
 #[test]
-fn test_voxel_dag_obj_shell() {
+fn test_voxel_dag_obj_shell_teapot() {
     use obj::*;
     use std::path::Path;
     use std::fs;
 
-    let obj_data = Obj::load(&Path::new("./data/teapot.obj")).expect("Failed to load obj file");
+    let obj_data = Obj::load(&Path::new("./data/obj/teapot.obj")).expect("Failed to load obj file");
 
 
     let mut triangles = vec![];
@@ -944,43 +944,78 @@ fn test_voxel_dag_obj_shell() {
 
     let serialized = bincode::serialize(&vchunk).unwrap();
 
-    fs::write("./data/teapot.svdag", serialized).unwrap();
+    fs::write("./data/dag/teapot.svdag", serialized).unwrap();
 
 }
 
 #[test]
-fn test_aabb_tri_intersection() {
-    {
-        let min = Vec3::new(-10.0, -10.0, -10.0);
-        let max = Vec3::new(10.0, 10.0, 10.0);
+fn test_voxel_dag_obj_shell_sponza() {
+    use obj::*;
+    use std::path::Path;
+    use std::fs;
 
-        let v0 = Vec3::new(12.0,9.0,9.0);
-        let v1 = Vec3::new(9.0,12.0,9.0);
-        let v2 = Vec3::new(19.0,19.0,20.0);
+    let obj_data = Obj::load(&Path::new("./data/obj/Sponza/sponza.obj")).expect("Failed to load obj file");
 
-        let tri = Triangle {
-            points : [v0, v1, v2],
-            normal : (v0 - v1).cross(v1 - v2),
-        };
 
-        assert!(!aabb_triangle_test(min, max, &tri));
+    let mut triangles = vec![];
+
+    for o in 0..(obj_data.data.objects.len()) {
+        let object = &obj_data.data.objects[o];
+        for g in 0..(object.groups.len()) {
+            let group = &object.groups[g];
+            for p in 0..(group.polys.len()) {
+                let poly = &group.polys[p];
+                for v in 2..(poly.0.len()) {
+                    let v0 = obj_data.data.position[poly.0[0].0];
+                    let v1 = obj_data.data.position[poly.0[v-1].0];
+                    let v2 = obj_data.data.position[poly.0[v].0];
+
+
+                    let v0 = Vec3::new(v0[0], v0[1], v0[2]);
+                    let v1 = Vec3::new(v1[0], v1[1], v1[2]);
+                    let v2 = Vec3::new(v2[0], v2[1], v2[2]);
+                    
+                    triangles.push(Triangle{
+                        points : [v0, v1, v2],
+                        normal : (v0 - v1).cross(v1 - v2),
+                    });
+                }
+            }
+        }
     }
-    
-    {
-        let min = Vec3::new(0.0, 0.0, 0.0);
-        let max = Vec3::new(0.25, 0.25, 0.25);
 
-        let v0 = Vec3::new(1.0, 0.0, 0.0);
-        let v1 = Vec3::new(0.0, 1.0, 0.0);
-        let v2 = Vec3::new(0.0, 0.0, 1.0);
-    
-        let mut tri = Triangle{
-            points : [v0, v1, v2],
-            normal : (v0 - v1).cross(v1 - v2),
-        };
+    let mut min = Vec3::new(f32::MAX, f32::MAX, f32::MAX);
+    let mut max = Vec3::new(f32::MIN, f32::MIN, f32::MIN);
 
-        assert!(!aabb_triangle_test(min, max, &tri));
+    for [x,y,z] in obj_data.data.position {
+        if x < min.x {min.x = x;}
+        if y < min.y {min.y = y;}
+        if z < min.z {min.z = z;}
+        if x > max.x {max.x = x;}
+        if y > max.y {max.y = y;}
+        if z > max.z {max.z = z;}
     }
+
+    let size = max - min;
+    let mut max_size = size.x;
+    if size.y > max_size {max_size = size.y;}
+    if size.z > max_size {max_size = size.z;}
+
+    println!("Triangles: {}", triangles.len());
+
+    use std::time::*;
+
+    let start = Instant::now();
+    let vchunk = VoxelChunk::from_obj_shell(12, &triangles, min, max_size);
+    let elapsed = start.elapsed();
+
+    println!("Time to voxelize: {:?}", elapsed);
+    println!("DAG nodes: {}", vchunk.len());
+
+    let serialized = bincode::serialize(&vchunk).unwrap();
+
+    fs::write("./data/dag/sponza.svdag", serialized).unwrap();
+
 }
 
 #[test]
@@ -1016,7 +1051,7 @@ fn test_voxel_dag_tri_shell() {
 
     let serialized = bincode::serialize(&vchunk).unwrap();
 
-    fs::write("./data/tri.svdag", serialized).unwrap();
+    fs::write("./data/dag/tri.svdag", serialized).unwrap();
 
 }
 
@@ -1030,7 +1065,7 @@ fn test_voxel_dag_bunny() {
     use std::u16;
     use std::time::*;
 
-    let dir = Path::new("./data/bunny/");
+    let dir = Path::new("./data/dense/bunny/");
     if dir.is_dir() {
         for entry in fs::read_dir(dir).unwrap() {
             let entry = entry.unwrap();
@@ -1079,7 +1114,7 @@ fn test_voxel_dag_bunny() {
     println!("Compression took {:?}", runtime);
     chunk.topological_sort();
 
-    let out_path = Path::new("./data/bunny.svdag");
+    let out_path = Path::new("./data/dag/bunny.svdag");
         
     println!("Writing File... ({:?})", out_path);
 
@@ -1124,7 +1159,7 @@ fn test_voxel_dag_implicit() {
     
     println!("Compression took {:?}", runtime);
 
-    let out_path = Path::new("./data/gyroid.svdag");
+    let out_path = Path::new("./data/dag/gyroid.svdag");
         
     println!("Writing File... ({:?})", out_path);
 
@@ -1219,7 +1254,7 @@ fn test_voxel_dag_sphere() {
 
     let chunk = VoxelChunk::from_dense_voxels(&data, [8, 8, 8]);
 
-    let out_path = Path::new("./data/sphere.svdag");
+    let out_path = Path::new("./data/dag/sphere.svdag");
 
     {
         use bincode;
@@ -1251,7 +1286,7 @@ fn test_voxel_dag_checkers() {
 
         let chunk = VoxelChunk::from_dense_voxels(&data, [d as usize, d as usize, d as usize]);
 
-        let path = format!("./data/checker{:0>2}.svdag", d);
+        let path = format!("./data/dag/checker{:0>2}.svdag", d);
 
         let out_path = Path::new(&path);
 
@@ -1287,7 +1322,7 @@ fn test_voxel_dag_octohedron() {
 
         let chunk = VoxelChunk::from_dense_voxels(&data, [d as usize, d as usize, d as usize]);
 
-        let path = format!("./data/octohedron{:0>2}.svdag", d);
+        let path = format!("./data/dag/octohedron{:0>2}.svdag", d);
 
         let out_path = Path::new(&path);
 
