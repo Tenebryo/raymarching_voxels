@@ -8,5 +8,6 @@ fn main() {
     println!("cargo:rerun-if-changed=src/shaders/light_bounce.comp");
     println!("cargo:rerun-if-changed=src/shaders/light_occlude.comp");
     println!("cargo:rerun-if-changed=src/shaders/light_combine.comp");
+    println!("cargo:rerun-if-changed=src/shaders/postprocess.comp");
     println!("cargo:rerun-if-changed=src/shaders/voxel.glsl");
 }

@@ -1,14 +1,26 @@
 #version 450
 
-
-
 layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
 layout(rgba32f,  binding = 0) uniform image2D light_buf;
 layout(rgba32f,  binding = 1) uniform image2D swapchain_image;
+layout(rgba32f,  binding = 2) uniform image2D luminance_image;
 
 layout(push_constant) uniform PostprocessPushConstantData {
     float exposure;
+    float adaptation;
+    float dt;
+    uint frame_idx;
 };
+
+
+float log10(float x) {
+    const float RLOG10 = 1.0/log(10);
+    return log(x) * RLOG10;
+}
+
+float autokey(in float lum) {
+    return 1.03 - 2.0 / (2.0 + log10(lum + 1.0));
+}
 
 void main() {
     ivec2 idx = ivec2(
@@ -16,14 +28,33 @@ void main() {
         gl_GlobalInvocationID.y
     );
 
+    float e = 0;
+    // do automatic exposure adjustment
+    if (idx.x == 0 && idx.y == 0) {
+        vec4 radiance = imageLoad(luminance_image, ivec2(0));
+
+        float lum = dot(radiance.rgb, vec3(0.256, 0.67, 0.065));
+
+        float lum_int = imageLoad(luminance_image, ivec2(31)).r;
+
+        lum_int = lum_int + dt * (lum - lum_int) * (1.0 - exp2(-adaptation));
+
+        lum_int = max(0, min(10000, lum_int));
+
+        imageStore(luminance_image, ivec2(31), vec4(lum_int));
+
+        e = autokey(lum_int) / lum_int;
+    } else {
+        e = imageLoad(luminance_image, ivec2(31)).r;
+    }
+
+    e = exposure * max(0.2, (1 - log(e)) * 2);
+
+    // do postprocessing effects
     vec4 light = imageLoad(light_buf, idx);
 
-
     // exposure HDR map
-    light.rgb = vec3(1.0) - exp(-light.rgb * exposure);
-    // Reinhard HDR map
-    // light.rgb = light.rgb / (vec3(1.0) + light.rgb);
-
+    light.rgb = vec3(1.0) - exp(-light.rgb * e);
 
     imageStore(swapchain_image, idx, light);
 }

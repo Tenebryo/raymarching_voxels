@@ -106,7 +106,7 @@ void main() {
         } else {
             imageStore(nImage, idx, vec4(0.0));
             imageStore(dImage, idx, vec4(render_dist+1));
-            imageStore(pImage, idx, vec4(0.0));
+            imageStore(pImage, idx, vec4(render_dist * ray_dir, 0.0));
             imageStore(mImage, idx, uvec4(0));
             imageStore(sImage, idx, uvec4(noise_value * noise_scale));
             imageStore(iteration_buf, idx, uvec4(iter, 0, 0, 0));

@@ -78,7 +78,7 @@ pub mod postprocess_cs {
     vulkano_shaders::shader!{
         ty: "compute",
         path: "src/shaders/postprocess.comp",
-        include: ["src/shaders/"],
+        include: [],
     }
 }
 
@@ -100,3 +100,12 @@ pub use light_bounce_cs::ty::PointLight;
 pub use light_bounce_cs::ty::DirectionalLight;
 pub use light_bounce_cs::ty::SpotLight;
 pub use light_bounce_cs::ty::Material;
+
+
+use vulkano::command_buffer::AutoCommandBufferBuilder;
+use vulkano::buffer::CpuAccessibleBuffer;
+use vulkano::device::Device;
+use vulkano::pipeline::ComputePipeline;
+use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
+use vulkano::descriptor::pipeline_layout::PipelineLayoutAbstract;
+use std::sync::Arc;

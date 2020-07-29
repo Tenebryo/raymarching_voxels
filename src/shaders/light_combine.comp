@@ -61,9 +61,10 @@ layout(rgba32f,  binding = 15) uniform image2D light_prev_buf;
 layout(rgba32f,  binding = 16) uniform image2D position_prev_buf;
 layout(r32ui,    binding = 17) uniform uimage2D count_in_buf;
 layout(r32ui,    binding = 18) uniform uimage2D count_out_buf;
+layout(          binding = 19) uniform sampler2D skybox_tex;
 
 // voxel geometry information and functions
-#define VOXEL_BINDING_OFFSET 19
+#define VOXEL_BINDING_OFFSET 20
 #include "voxel.glsl"
 
 // #define BRDF_BINDING_OFFSET (VOXEL_BINDING_END)
@@ -247,7 +248,26 @@ void main() {
                 // light = vec3(rdd1);
 
                 light += light_bounce * materials[m0].albedo;
+            } else {
+                vec3 d = normalize(p1.xyz);
+
+                float theta = atan(d.z, d.x);
+                float phi = - asin(d.y);
+
+                const float R_PI = 1.0 / (PI);
+
+                light = texture(skybox_tex, vec2(theta * R_PI * 0.5, phi * R_PI + 0.5)).rgb;
             }
+        } else {
+            // skybox
+            vec3 d = normalize(p0.xyz);
+
+            float theta = atan(d.z, d.x);
+            float phi = - asin(d.y);
+
+            const float R_PI = 1.0 / (PI);
+
+            light = texture(skybox_tex, vec2(theta * R_PI * 0.5, phi * R_PI + 0.5)).rgb;
         }
 
         // light = p1.xyz;
@@ -274,10 +294,6 @@ void main() {
 
         // vec4 light_val = vec4(light, 1.0);
         // light_val = vec4(l0.xyz, 1.0);
-        
-        if (p0.w < 0.5) {
-            light_val = vec4(0.5,0.5,1,1);
-        }
 
         imageStore(light_buf, idx, light_val);
         // imageStore(light_prev_buf, idx, light_val);

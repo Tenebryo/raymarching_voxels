@@ -39,6 +39,7 @@ pub struct GBuffer {
     pub hdr_light_buffer : Arc<StorageImage<Format>>,
 
     pub luminance_buffer : Arc<StorageImage<Format>>,
+    pub luminance_buffer_t : Arc<StorageImage<Format>>,
 
     pub light_reprojected_buffer : Arc<StorageImage<Format>>,
     pub position_reprojected_buffer : Arc<StorageImage<Format>>,
@@ -66,42 +67,43 @@ impl GBuffer {
         let pre_trace_width        = (width / PRE_DEPTH_ESTIMATE_PATCH) + 1;
         let pre_trace_height       = (height / PRE_DEPTH_ESTIMATE_PATCH) + 1;
 
-        let pre_depth_buffer       = StorageImage::new(device.clone(), Dimensions::Dim2d{width : pre_trace_width, height : pre_trace_height}, Format::R32Sfloat, [queue_family].iter().cloned()).unwrap();
-        let depth_buffer           = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Sfloat, [queue_family].iter().cloned()).unwrap();
-        let alpha_buffer           = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let pre_depth_buffer            = StorageImage::new(device.clone(), Dimensions::Dim2d{width : pre_trace_width, height : pre_trace_height}, Format::R32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let depth_buffer                = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let alpha_buffer                = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Sfloat, [queue_family].iter().cloned()).unwrap();
 
-        let index_buffer           = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
-        let light_index_buffer     = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
-        
-        let rng_seed_buffer        = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Uint, [queue_family].iter().cloned()).unwrap();
-        
-        let material0_buffer       = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
-        let material1_buffer       = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
+        let index_buffer                = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
+        let light_index_buffer          = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
 
-        let normal0_buffer         = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
-        let normal0b_buffer        = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
-        let normal1_buffer         = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
-        let normal1b_buffer        = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
-        let ldir0_buffer           = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
-        let ldir1_buffer           = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
-        let position0_buffer       = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
-        let position1_buffer       = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
-        let temporal_buffer        = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
-        let light0_buffer          = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
-        let light1_buffer          = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let rng_seed_buffer             = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Uint, [queue_family].iter().cloned()).unwrap();
 
-        let hdr_light_buffer       = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
-        
-        let luminance_buffer       = StorageImage::new(device.clone(), Dimensions::Dim2d{width : 32, height : 32}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
-        
-        let light_reprojected_buffer          = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
-        let position_reprojected_buffer       = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let material0_buffer            = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
+        let material1_buffer            = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
 
-        let atomic_buffer          = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
-        let reprojection_count_a_buffer          = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
-        let reprojection_count_b_buffer          = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
+        let normal0_buffer              = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let normal0b_buffer             = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let normal1_buffer              = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let normal1b_buffer             = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let ldir0_buffer                = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let ldir1_buffer                = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let position0_buffer            = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let position1_buffer            = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let temporal_buffer             = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let light0_buffer               = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let light1_buffer               = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+
+        let hdr_light_buffer            = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+
+        let luminance_buffer            = StorageImage::new(device.clone(), Dimensions::Dim2d{width : 32, height : 32}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let luminance_buffer_t          = StorageImage::new(device.clone(), Dimensions::Dim2d{width : 32, height : 32}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
         
-        let iteration_count_buffer          = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Uint, [queue_family].iter().cloned()).unwrap();
+        let light_reprojected_buffer    = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let position_reprojected_buffer = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+
+        let atomic_buffer               = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
+        let reprojection_count_a_buffer = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
+        let reprojection_count_b_buffer = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
+        
+        let iteration_count_buffer      = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Uint, [queue_family].iter().cloned()).unwrap();
 
         GBuffer {
             temp_buffers,
@@ -126,6 +128,7 @@ impl GBuffer {
             light1_buffer,
             hdr_light_buffer,
             luminance_buffer,
+            luminance_buffer_t,
             light_reprojected_buffer,
             position_reprojected_buffer,
             atomic_buffer,

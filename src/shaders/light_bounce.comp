@@ -239,7 +239,6 @@ void main() {
             itervec.y = iterations;
             imageStore(iteration_buf, idx, uvec4(itervec));
 
-
             if (hit) {
                 p1.w = 1.0;
                 norm1.w = 1.0;
@@ -318,7 +317,7 @@ void main() {
                 ldist1 = 0;
                 light1 = vec4(0);
                 ldir1 = vec3(0);
-                p1 = vec4(0);
+                p1 = vec4(in_0 * render_dist, 0);
                 norm1 = vec4(0);
                 vmat_1 = 0;
             }

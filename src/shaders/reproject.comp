@@ -50,6 +50,22 @@ invert this code snippet from ./intersect.comp to get the pixel from ray directi
 
 */
 
+vec3 ray_dir(ivec2 idx, float ar, ivec2 size) {
+    
+    // calculate ray for this pixel by constructing a virtual screen
+    vec3 vx = normalize(cross(forward, up));
+    vec3 vy = normalize(cross(forward, vx));
+
+    // ND coordinates [0,1]x[0,1]
+    vec2 ndc = vec2(idx) / vec2(size);
+
+    // (pseudo) screen space coordinates [-1,1]x[-1,1]
+    vec2 ssc = 2 * (ndc - 0.5);
+
+    // the ray direction for this pixel
+    return normalize(forward + ar * ssc.x * vx + ssc.y * vy);
+}
+
 void main() {
 
     ivec2 idx = ivec2(
@@ -79,10 +95,16 @@ void main() {
         // vector/ray from new camera origin to world position of intersection
         vec3 v = wp - origin;
 
+        vec3 vn = normalize(v);
+
         uint idepth = uint(length(v) * depth_scale);
 
-        // check that the intersection is in front of the camera
         float d = dot(forward, v);
+
+        // check that the reprojected pixel is in front of the camera
+        if (d < 0) {
+            return;
+        }
 
         // intersect v into the new camera plane.
         v *= dot(forward, forward) / d;
@@ -90,20 +112,32 @@ void main() {
         v -= forward;
 
         // determine the new coordinates on the camera plane ([-ar, ar]x[-1, 1])
-        vec2 uv = vec2(dot(sx, v) / aspect_ratio, dot(sy, v)) * 0.5 + 0.5;
+        vec2 uv = vec2(dot(sx, v), dot(sy, v));
+
+        // determine the new coordinates on the screen area ([0, 1]x[0, 1])
+        uv = uv * vec2(1.0 / aspect_ratio, 1.0) * 0.5 + 0.5;
 
         // new screen coordinates (floored)
         ivec2 nsc = ivec2(round(size * uv));
 
+        // resolve reprojection conflicts with atomics
         imageAtomicMin(atomic_buf, nsc, idepth);
 
         // synchronize work group
         barrier();
 
-        uint cdepth = imageAtomicMin(atomic_buf, nsc, idepth);
+        uint cdepth = imageLoad(atomic_buf, nsc).r;
+        // uint cdepth = imageAtomicMin(atomic_buf, nsc, idepth);
+
+        float diff = distance(vn, ray_dir(nsc, aspect_ratio, size));
 
         if (cdepth == idepth) {
-            imageStore(out_buf, nsc, imageLoad(in_buf, idx));
+            if (diff > 0.005) {
+                // debug information
+                imageStore(out_buf, nsc, vec4(1,0,0,1));
+            } else {
+                imageStore(out_buf, nsc, imageLoad(in_buf, idx));
+            }
             imageStore(position_out_buf, nsc, p);
             imageStore(count_out_buf, nsc, imageLoad(count_in_buf, idx) + 1);
         }
