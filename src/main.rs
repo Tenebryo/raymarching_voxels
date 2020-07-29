@@ -37,6 +37,10 @@ use winit::event::{Event, WindowEvent, VirtualKeyCode};
 
 use winit_input_helper::WinitInputHelper;
 
+use imgui::{Context, FontConfig, FontGlyphRanges, FontSource, Ui};
+use imgui_winit_support::{HiDpiMode, WinitPlatform};
+use imgui_vulkano_renderer::{Renderer, RendererError};
+
 use cgmath::{Vector3, Quaternion, InnerSpace, Rotation3, Rad, Rotation};
 
 use png;
@@ -233,7 +237,7 @@ fn main() {
         ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
     });
 
-    // build denoise compute pipeline
+    // build blending compute pipeline
     let normal_blend_compute_pipeline = Arc::new({
         // raytracing shader
         use shaders::normal_blend_cs;
@@ -248,16 +252,30 @@ fn main() {
         ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
     });
 
+    let postprocess_compute_pipeline = Arc::new({
+        use shaders::postprocess_cs;
+
+        let spec_consts = postprocess_cs::SpecializationConstants{
+            constant_1 : local_size_x,
+            constant_2 : local_size_y,
+        };
+
+        let shader = postprocess_cs::Shader::load(device.clone()).unwrap();
+        ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
+    });
+
+
     println!("Render Pipeline initialized");
 
-    let _timestamp_query_pool = Arc::new(UnsafeQueryPool::new(device.clone(), QueryType::Timestamp, 16).unwrap());
-
-    let _timestamp_command_pool = Arc::new(StandardCommandPool::new(device.clone(), compute_queue.family()));
+    
 
 
     //*************************************************************************************************************************************
     // Screen Buffer Allocation
     //*************************************************************************************************************************************
+
+
+    let mut swapchain_format = Format::R8G8B8A8Srgb;
 
     // build a swapchain compatible with the window surface we built earlier
     let (mut swapchain, mut swapchain_images) = {
@@ -267,6 +285,9 @@ fn main() {
         let alpha = caps.supported_composite_alpha.iter().next().unwrap();
 
         let format = caps.supported_formats[0].0;
+        swapchain_format = format;
+
+        println!("Using Swapchain Format: {:?}", format);
 
         let dimensions: [u32; 2] = surface.window().inner_size().into();
 
@@ -286,6 +307,38 @@ fn main() {
 
     println!("Storage Images initialized");
     
+    
+    let mut imgui = Context::create();
+    imgui.set_ini_filename(None);
+
+    let mut platform = WinitPlatform::init(&mut imgui);
+
+    platform.attach_window(imgui.io_mut(), surface.window(), HiDpiMode::Rounded);
+    
+    let hidpi_factor = platform.hidpi_factor();
+    let font_size = (13.0 * hidpi_factor) as f32;
+    imgui.fonts().add_font(&[
+        FontSource::DefaultFontData {
+            config: Some(FontConfig {
+                size_pixels: font_size,
+                ..FontConfig::default()
+            }),
+        },
+        FontSource::TtfData {
+            data: include_bytes!("../data/font/mplus-1p-regular.ttf"),
+            size_pixels: font_size,
+            config: Some(FontConfig {
+                rasterizer_multiply: 1.75,
+                glyph_ranges: FontGlyphRanges::japanese(),
+                ..FontConfig::default()
+            }),
+        },
+    ]);
+    
+    let mut imgui_renderer = Renderer::init(&mut imgui, device.clone(), compute_queue.clone(), swapchain_format).unwrap();
+
+    println!("ImGui Context and Renderer Initialized");
+
 
     //*************************************************************************************************************************************
     // Constant Data
@@ -381,7 +434,7 @@ fn main() {
             reader.next_frame(&mut image_data[(64 * 64 * 4 * i)..(64 * 64 * 4 * (i+1))]).unwrap();
         }
 
-        println!("{:?}", dimensions);
+        // println!("{:?}", dimensions);
 
         ImmutableImage::from_iter(
             image_data.iter().cloned(),
@@ -395,27 +448,29 @@ fn main() {
     // Miscellaneous constants
     //*************************************************************************************************************************************
 
-    let mut dynamic_state = DynamicState { line_width: None, viewports: None, scissors: None, compare_mask: None, write_mask: None, reference: None };
-
-    update_dynamic_state(&swapchain_images, &mut dynamic_state);
+    // let mut dynamic_state = DynamicState { line_width: None, viewports: None, scissors: None, compare_mask: None, write_mask: None, reference: None };
 
     let mut recreate_swapchain = false;
 
     let mut previous_frame_end = Some(Box::new(load_future) as Box<dyn GpuFuture>);
 
-    let mut fps = Timing::new(256);
-    const FRAME_COUNTS : i32 = 144;
+    let mut fps = Timing::new(16);
+    const FRAME_COUNTS : i32 = 10;
     let mut frame_counts = FRAME_COUNTS;
     let dimensions: [u32; 2] = surface.window().inner_size().into();
     let mut surface_width = dimensions[0];
     let mut surface_height = dimensions[1];
     let p_start = Instant::now();
+    let mut exposure = 1.0;
+
+    let mut ui_enabled = true;
+    let mut ui_wants_mouse_capture = false;
 
     let mut input = WinitInputHelper::new();
 
-    let mut forward = Vector3::new(1.0, 1.0, 1.0).normalize();
+    let mut forward = Vector3::new(1.0, 0.0, 0.0).normalize();
     let up = Vector3::new(0.0, 1.0, 0.0);
-    let mut position = 0.1f32 * Vector3::new(-1.0, -1.0, -1.0);
+    let mut position = Vector3::new(0.15, 0.075, 0.3);
     let mut old_position = position;
     let mut input_time = Instant::now();
     let mut pitch = 0.0;
@@ -435,7 +490,7 @@ fn main() {
         max_depth : 16,
         render_dist: 100.0,
         frame_idx : 0,
-        noise_idx : 0,
+        noise_idx : [0,0,0],
         noise_frames : 64,
     };
 
@@ -457,9 +512,10 @@ fn main() {
     // parse voxel goemetry data
     let mut svdag_geometry_data = {
 
-        let chunk_bytes = include_bytes!("../data/teapot.svdag");
+        // let chunk_bytes = std::fs::read("./data/dag/hairball.svdag").unwrap();
+        let chunk_bytes = std::fs::read("./data/dag/sponza_mats.svdag").unwrap();
 
-        bincode::deserialize::<vox::VoxelChunk>(chunk_bytes).expect("Deserialization Failed")
+        bincode::deserialize::<vox::VoxelChunk>(&chunk_bytes).expect("Deserialization Failed")
     };
 
     // svdag_geometry_data.make_222_grid();
@@ -468,6 +524,7 @@ fn main() {
     // svdag_geometry_data.make_222_grid();
 
     // calculate the lod materials
+    
     svdag_geometry_data.calculate_lod_materials();
 
     // load the voxel data onto the GPU
@@ -480,7 +537,7 @@ fn main() {
     };
 
 
-    println!("Voxel Data iniitialized");
+    println!("Voxel Data initialized");
 
     // create a list of point lights to render
     let point_light_buffer = {
@@ -489,8 +546,8 @@ fn main() {
         let lights = [
             //sun
             PointLight {
-                position : [0.0, 1000.0, 0.0],
-                power : 1.0e5,
+                position : [0.5, 0.2, 0.3],
+                power : 1.0e1,
                 color : [0.5, 1.0, 1.0],
                 radius : 0.0,
             }
@@ -505,8 +562,8 @@ fn main() {
         let lights = [
             //sun
             DirectionalLight {
-                direction : [1.0, -0.0001, -0.0001],
-                color : [0.5; 3],
+                direction : [-0.0001, -1.0, -0.0001],
+                color : [50.0; 3],
                 _dummy0 : [0;4],
                 _dummy1 : [0;4],
             }
@@ -536,44 +593,70 @@ fn main() {
     println!("Created Light Buffers");
     
     // let basic_brdf = brdf::BRDF::read_matusik_brdf_file(Path::new("data/teflon.bin"), [90, 90, 90, 90], 2, 2).expect("could not load brdf file");
-    let basic_brdf = bincode::deserialize::<brdf::BRDF>(include_bytes!("../data/teflon-16-16-128-32.brdf")).unwrap();
+    let basic_brdf = bincode::deserialize::<brdf::BRDF>(include_bytes!("../data/brdf/teflon-16-16-128-32.brdf")).unwrap();
     // create the brdf buffer
     let brdf_buffer = CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, (0..(basic_brdf.len())).map(|_| 0.0f32)).unwrap();
 
     basic_brdf.write_to_buffer(&mut brdf_buffer.write().unwrap(), 0);
+    
+    println!("Created BRDF Buffer");
 
+    println!("Created Iteration Count Buffer");
 
     // create a list of materials to render
     let material_buffer = {
         use shaders::Material;
 
-        let materials = [
-            // air material
-            // Material {brdf : basic_brdf.create_shader_type(0), albedo : [0.0; 3], transparency: 1.0, emission: [0.0; 3], flags: 0b00000000, roughness: 0.0, shininess: 0.3, _dummy0: [0;8]},
-            Material {brdf : 0, albedo : [0.0; 3], transparency: 1.0, emission: [0.0; 3], flags: 0b00000000, roughness: 0.0, shininess: 0.3, _dummy0: [0;12], _dummy1: [0;8]},
-            // solid material
-            // Material {brdf : basic_brdf.create_shader_type(0), albedo : [1.0; 3], transparency: 0.0, emission: [0.0; 3], flags: 0b00000001, roughness: 0.0, shininess: 0.3, _dummy0: [0;8]}
-            Material {brdf : 0, albedo : [1.0; 3], transparency: 0.0, emission: [0.0; 3], flags: 0b00000001, roughness: 0.0, shininess: 0.3, _dummy0: [0;12], _dummy1: [0;8]}
+
+        // let materials = [
+        //     // air material
+        //     // Material {brdf : basic_brdf.create_shader_type(0), albedo : [0.0; 3], transparency: 1.0, emission: [0.0; 3], flags: 0b00000000, roughness: 0.0, metalness: 0.3, _dummy0: [0;8]},
+        //     Material {brdf : 0, albedo : [0.0; 3], transparency: 1.0, emission: [0.0; 3], flags: 0b00000000, roughness: 0.0, metalness: 0.3, _dummy0: [0;12], _dummy1: [0;8]},
+        //     // solid material
+        //     // Material {brdf : basic_brdf.create_shader_type(0), albedo : [1.0; 3], transparency: 0.0, emission: [0.0; 3], flags: 0b00000001, roughness: 0.0, metalness: 0.3, _dummy0: [0;8]}
+        //     Material {brdf : 0, albedo : [1.0, 1.0, 1.0], transparency: 0.0, emission: [0.0; 3], flags: 0b00000001, roughness: 0.0, metalness: 0.3, _dummy0: [0;12], _dummy1: [0;8]},
+        //     Material {brdf : 0, albedo : [1.0, 1.0, 1.0], transparency: 0.0, emission: [0.1; 3], flags: 0b00000001, roughness: 0.0, metalness: 0.3, _dummy0: [0;12], _dummy1: [0;8]}
+        // ];
+
+        // CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, materials.iter().cloned()).unwrap()
+
+
+        let material_bytes = std::fs::read("./data/dag/sponza_mats.mats")
+            .expect("failed to read material file");
+
+        let mut materials : Vec<shaders::Material> = vec![
+            Material {brdf : 0, albedo : [0.0; 3], transparency: 1.0, emission: [0.0; 3], flags: 0b00000000, roughness: 0.0, metalness: 0.3, _dummy0: [0;12], _dummy1: [0;8]},
         ];
+        materials.extend(bincode::deserialize::<Vec<vox::Material>>(&material_bytes).unwrap().iter()
+            .map(|m| shaders::Material {
+                albedo : m.albedo,
+                emission : m.emission,
+                roughness : m.roughness,
+                metalness : m.metalness,
+                brdf : 0,
+                flags : 0,
+                transparency : 0.0,
+                _dummy0: [0;12], _dummy1: [0;8],
+            }));
 
         CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, materials.iter().cloned()).unwrap()
+
     };
 
     
-    println!("Created BRDF Buffer");
     println!("Material Data initialized");
-
 
     //*************************************************************************************************************************************
     // Main Event Loop
     //*************************************************************************************************************************************
-    
-    println!("Light Data initialized");
 
-    println!("");
-    println!("");
-    println!("");
-    println!("");
+    println!("Starting Event Loop");
+
+    let depth_scale = (i32::MAX as f64 / intersect_pc.render_dist as f64) as u32;
+
+    let mut imgui_frame_time = Instant::now();
+
+    let mut cpu_rendering_time = 0.0;
 
     event_loop.run(move |event, _, control_flow| {
 
@@ -584,6 +667,11 @@ fn main() {
             Event::WindowEvent { event: WindowEvent::Resized(_), .. } => {
                 recreate_swapchain = true;
             },
+            Event::NewEvents(_) => {
+                imgui_frame_time = imgui.io_mut().update_delta_time(imgui_frame_time);
+            }
+            Event::MainEventsCleared => {
+            }
             Event::RedrawEventsCleared => {
 
                 // start FPS sample
@@ -608,8 +696,6 @@ fn main() {
                     swapchain = new_swapchain;
                     swapchain_images = new_images;
 
-                    update_dynamic_state(&swapchain_images, &mut dynamic_state);
-
                     // re-allocate buffer images
 
                     gbuffer = GBuffer::new_buffers(device.clone(), compute_queue.family(), surface_width, surface_height, num_temp_buffers);
@@ -617,6 +703,9 @@ fn main() {
 
                     recreate_swapchain = false;
                 }
+
+                let cpu_rendering_start = Instant::now();
+
 
                 // get next swapchain image
                 let (image_num, suboptimal, acquire_future) = match swapchain::acquire_next_image(swapchain.clone(), None) {
@@ -633,7 +722,54 @@ fn main() {
                     recreate_swapchain = true;
                 }
 
+                
+                platform
+                    .prepare_frame(imgui.io_mut(), &surface.window())
+                    .expect("Failed to prepare frame");
+                let mut ui = imgui.frame();
+
+                if ui_enabled {
+                    use imgui::*;
+                    
+                    let (t, _t_var, fps, _) = fps.stats();
+
+                    Window::new(im_str!("Info"))
+                        .flags(WindowFlags::NO_MOVE | WindowFlags::NO_COLLAPSE)
+                        .size([400.0, 300.0], Condition::FirstUseEver)
+                        .position([0.0, 0.0], Condition::FirstUseEver)
+                        .build(&ui, || {
+                            ui.text(format!("Framerate: {:3.1} fps ({:1.3} ms)", fps, 1000.0 * t));
+                            ui.separator();
+                            ui.text(format!("Position:  {:0<5.3?}", position));
+                            ui.text(format!("Forward:   {:0<5.3?}", forward));
+                            ui.text(format!("P/Y:       {:0<5.3?}/{:0<5.3?}", 180.0 * pitch / std::f32::consts::PI, 180.0 * yaw / std::f32::consts::PI));
+                            ui.text(format!("DS Build   {:4.3} us", 1e6 * cpu_rendering_time));
+                            let mouse_pos = ui.io().mouse_pos;
+                            ui.text(format!(
+                                "Mouse Position: ({:.1},{:.1})",
+                                mouse_pos[0], mouse_pos[1]
+                            ));
+
+                            Slider::new(im_str!("Exposure"), 0.1..=5.0)
+                                .build(&ui, &mut exposure);
+                                
+
+                            Slider::new(im_str!("LoD"), 1..=15)
+                                .build(&ui, &mut intersect_pc.max_depth);
+
+                            ui_wants_mouse_capture = ui.io().want_capture_mouse;
+                        });
+
+                        
+                    // println!("FPS: {:0<4.2} ({:0<5.3}ms +/- {:0<5.3}ms)  ", fps, t * 1000.0, t_var * 1000.0);
+                    // println!("Position: {:0<5.3?}                        ", position);
+                    // println!("Forward: {:0<5.3?}                         ", forward);
+                    // println!("P/Y: {:0<5.3}/{:0<5.3} 
+                }
+
+
                 let _time = p_start.elapsed().as_secs_f32();
+
 
                 // if let Ok(mut wlock) = directional_light_buffer.write() {
                 //     wlock[0].direction = [time.sin(), time.cos(), 0.0];
@@ -648,7 +784,7 @@ fn main() {
                 let light_blend_pc = shaders::NormalBlendPushConstantData {
                     stride : 1,
                     normed : false as u32,
-                    scale : 10000000000f32,
+                    scale : 10000f32,
                 };
                 
                 let normal_blend_layout = normal_blend_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
@@ -665,7 +801,7 @@ fn main() {
                     .build().unwrap()
                 );
                 let light_blend_set_1a = Arc::new(PersistentDescriptorSet::start(normal_blend_layout.clone())
-                    .add_image(gbuffer.temp_buffers[1].clone()).unwrap()
+                    .add_image(gbuffer.hdr_light_buffer.clone()).unwrap()
                     .add_image(gbuffer.position0_buffer.clone()).unwrap()
                     .add_image(gbuffer.temp_buffers[2].clone()).unwrap()
                     .build().unwrap()
@@ -673,7 +809,7 @@ fn main() {
                 let light_blend_set_1b = Arc::new(PersistentDescriptorSet::start(normal_blend_layout.clone())
                     .add_image(gbuffer.temp_buffers[2].clone()).unwrap()
                     .add_image(gbuffer.position0_buffer.clone()).unwrap()
-                    .add_image(swapchain_images[image_num].clone()).unwrap()
+                    .add_image(gbuffer.hdr_light_buffer.clone()).unwrap()
                     .build().unwrap()
                 );
                 
@@ -681,15 +817,23 @@ fn main() {
                 intersect_pc.camera_origin = [position.x, position.y, position.z];
                 intersect_pc.camera_up = [up.x, up.y, up.z];
                 intersect_pc.frame_idx += 1;
-                intersect_pc.noise_idx = thread_rng().gen_range(0,intersect_pc.noise_frames);
+                intersect_pc.noise_idx = [
+                    thread_rng().gen_range(0,intersect_pc.noise_frames),
+                    thread_rng().gen_range(0,intersect_pc.noise_frames),
+                    thread_rng().gen_range(0,intersect_pc.noise_frames)
+                ];
                 old_position = position;
 
                 
                 let reproject_layout = reproject_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
                 let reproject_set = Arc::new(PersistentDescriptorSet::start(reproject_layout.clone())
-                    .add_image(gbuffer.temp_buffers[1].clone()).unwrap()
+                    .add_image(gbuffer.hdr_light_buffer.clone()).unwrap()
                     .add_image(gbuffer.position0_buffer.clone()).unwrap()
-                    .add_image(gbuffer.temp_buffers[0].clone()).unwrap()
+                    .add_image(gbuffer.light_reprojected_buffer.clone()).unwrap()
+                    .add_image(gbuffer.position_reprojected_buffer.clone()).unwrap()
+                    .add_image(gbuffer.atomic_buffer.clone()).unwrap()
+                    .add_image(gbuffer.reprojection_count_a_buffer.clone()).unwrap()
+                    .add_image(gbuffer.reprojection_count_b_buffer.clone()).unwrap()
                     .build().unwrap()
                 );
                 
@@ -697,8 +841,8 @@ fn main() {
                     origin : intersect_pc.camera_origin,
                     forward : intersect_pc.camera_forward,
                     up : intersect_pc.camera_up,
+                    depth_scale,
                     _dummy0 : [0; 4],
-                    _dummy1 : [0; 4],
                 };
 
                 let intersect_layout = intersect_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
@@ -716,6 +860,7 @@ fn main() {
                     // random seed buffer
                     .add_image(gbuffer.rng_seed_buffer.clone()).unwrap()
                     .add_sampled_image(blue_noise_tex.clone(), nst_sampler.clone()).unwrap()
+                    .add_image(gbuffer.iteration_count_buffer.clone()).unwrap()
                     .add_buffer(svdag_geometry_buffer.clone()).unwrap()
                     .add_buffer(svdag_material_buffer.clone()).unwrap()
                     .build().unwrap()
@@ -725,7 +870,7 @@ fn main() {
                     camera_forward : intersect_pc.camera_forward,
                     camera_origin : intersect_pc.camera_origin,
                     camera_up : intersect_pc.camera_up,
-                    max_depth : 6,
+                    max_depth : u32::min(6, intersect_pc.max_depth),
 
                     _dummy0 : [0;4],
                     _dummy1 : [0;4],
@@ -768,6 +913,7 @@ fn main() {
                     // light value buffer
                     .add_image(gbuffer.light0_buffer.clone()).unwrap()
                     .add_image(gbuffer.light1_buffer.clone()).unwrap()
+                    .add_image(gbuffer.iteration_count_buffer.clone()).unwrap()
                     // voxel data
                     .add_buffer(svdag_geometry_buffer.clone()).unwrap()
                     .add_buffer(svdag_material_buffer.clone()).unwrap()
@@ -795,6 +941,7 @@ fn main() {
                     .add_image(gbuffer.ldir0_buffer.clone()).unwrap()
                     // light value buffer
                     .add_image(gbuffer.light0_buffer.clone()).unwrap()
+                    .add_image(gbuffer.iteration_count_buffer.clone()).unwrap()
                     // voxel data
                     .add_buffer(svdag_geometry_buffer.clone()).unwrap()
                     .add_buffer(svdag_material_buffer.clone()).unwrap()
@@ -809,16 +956,25 @@ fn main() {
                     .add_image(gbuffer.ldir1_buffer.clone()).unwrap()
                     // light value buffer
                     .add_image(gbuffer.light1_buffer.clone()).unwrap()
+                    .add_image(gbuffer.iteration_count_buffer.clone()).unwrap()
                     // voxel data
                     .add_buffer(svdag_geometry_buffer.clone()).unwrap()
                     .add_buffer(svdag_material_buffer.clone()).unwrap()
                     .build().unwrap()
                 );
 
-                let light_occlude_pc = shaders::LightOccludePushConstantData {
+                let light_occlude_pc_a = shaders::LightOccludePushConstantData {
                     render_dist : intersect_pc.render_dist,
                     num_materials : 2,
                     max_depth : intersect_pc.max_depth,
+                    bounce_idx : 0,
+                };
+                
+                let light_occlude_pc_b = shaders::LightOccludePushConstantData {
+                    render_dist : intersect_pc.render_dist,
+                    num_materials : 2,
+                    max_depth : intersect_pc.max_depth,
+                    bounce_idx : 1,
                 };
 
                 
@@ -847,10 +1003,13 @@ fn main() {
                     .add_image(gbuffer.light0_buffer.clone()).unwrap()
                     .add_image(gbuffer.light1_buffer.clone()).unwrap()
                     // output image
-                    .add_image(gbuffer.temp_buffers[1].clone()).unwrap()
+                    .add_image(gbuffer.hdr_light_buffer.clone()).unwrap()
                     // .add_image(swapchain_images[image_num].clone()).unwrap()
-                    // temporal buffer
-                    .add_image(gbuffer.temp_buffers[0].clone()).unwrap()
+                    // temporal integration buffers
+                    .add_image(gbuffer.light_reprojected_buffer.clone()).unwrap()
+                    .add_image(gbuffer.position_reprojected_buffer.clone()).unwrap()
+                    .add_image(gbuffer.reprojection_count_b_buffer.clone()).unwrap()
+                    .add_image(gbuffer.reprojection_count_a_buffer.clone()).unwrap()
                     // voxel data
                     .add_buffer(svdag_geometry_buffer.clone()).unwrap()
                     .add_buffer(svdag_material_buffer.clone()).unwrap()
@@ -858,7 +1017,7 @@ fn main() {
                 );
 
                 let light_combine_pc = shaders::LightCombinePushConstantData {
-                    ambient_light : [0.02; 3],
+                    ambient_light : [0.00; 3],
                     camera_forward : pre_trace_pc.camera_forward,
                     camera_up : pre_trace_pc.camera_up,
                     camera_origin : pre_trace_pc.camera_origin,
@@ -867,6 +1026,17 @@ fn main() {
                     _dummy1:[0;4],
                     _dummy2:[0;4],
                 };
+
+                let postprocess_layout = postprocess_compute_pipeline.layout().descriptor_set_layout(0).unwrap();
+                let postprocess_set = Arc::new(PersistentDescriptorSet::start(postprocess_layout.clone())
+                    .add_image(gbuffer.hdr_light_buffer.clone()).unwrap()
+                    .add_image(swapchain_images[image_num].clone()).unwrap()
+                    .build().unwrap()
+                );
+                let postprocess_pc = shaders::PostprocessPushConstantData {
+                    exposure
+                };
+
 
                 // number of blocks depends on the runtime-computed local_size parameters of the physical device
                 let block_dim_x = (surface_width - 1) / local_size_x + 1;
@@ -880,28 +1050,44 @@ fn main() {
 
                 render_command_buffer_builder
                     .dispatch([(gbuffer.pre_trace_width - 1) / local_size_x + 1, (gbuffer.pre_trace_height - 1) / local_size_y + 1, 1], pre_trace_compute_pipeline.clone(), pre_trace_set.clone(), pre_trace_pc).unwrap()
-                    .clear_color_image(gbuffer.temp_buffers[0].clone(), vulkano::format::ClearValue::Float([0f32;4])).unwrap()
+                    .clear_color_image(gbuffer.light_reprojected_buffer.clone(), vulkano::format::ClearValue::Float([0f32;4])).unwrap()
+                    .clear_color_image(gbuffer.position_reprojected_buffer.clone(), vulkano::format::ClearValue::Float([0f32;4])).unwrap()
+                    .clear_color_image(gbuffer.atomic_buffer.clone(), vulkano::format::ClearValue::Uint([i32::MAX as u32;4])).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], reproject_compute_pipeline.clone(), reproject_set.clone(), reproject_pc).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], intersect_compute_pipeline.clone(), intersect_set.clone(), intersect_pc).unwrap()
-                    .dispatch([block_dim_x, block_dim_y, 1], normal_blend_compute_pipeline.clone(), normal_blend_set_a.clone(), normal_blend_pc).unwrap()
-                    .dispatch([block_dim_x, block_dim_y, 1], normal_blend_compute_pipeline.clone(), normal_blend_set_b.clone(), normal_blend_pc).unwrap()
+                    // .dispatch([block_dim_x, block_dim_y, 1], normal_blend_compute_pipeline.clone(), normal_blend_set_a.clone(), normal_blend_pc).unwrap()
+                    // .dispatch([block_dim_x, block_dim_y, 1], normal_blend_compute_pipeline.clone(), normal_blend_set_b.clone(), normal_blend_pc).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], light_bounce_compute_pipeline.clone(), light_bounce_set.clone(), light_bounce_pc).unwrap()
-                    .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_0.clone(), light_occlude_pc).unwrap()
-                    .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_1.clone(), light_occlude_pc).unwrap()
+                    .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_0.clone(), light_occlude_pc_a).unwrap()
+                    .dispatch([block_dim_x, block_dim_y, 1], light_occlude_compute_pipeline.clone(), light_occlude_set_1.clone(), light_occlude_pc_b).unwrap()
                     .dispatch([block_dim_x, block_dim_y, 1], light_combine_compute_pipeline.clone(), light_combine_set.clone(), light_combine_pc).unwrap()
-                    .dispatch([block_dim_x, block_dim_y, 1], normal_blend_compute_pipeline.clone(), light_blend_set_1a.clone(), light_blend_pc).unwrap()
-                    .dispatch([block_dim_x, block_dim_y, 1], normal_blend_compute_pipeline.clone(), light_blend_set_1b.clone(), light_blend_pc).unwrap();
+                    // .dispatch([block_dim_x, block_dim_y, 1], normal_blend_compute_pipeline.clone(), light_blend_set_1a.clone(), light_blend_pc).unwrap()
+                    // .dispatch([block_dim_x, block_dim_y, 1], normal_blend_compute_pipeline.clone(), light_blend_set_1b.clone(), light_blend_pc).unwrap()
+                    .dispatch([block_dim_x, block_dim_y, 1], postprocess_compute_pipeline.clone(), postprocess_set.clone(), postprocess_pc).unwrap();
 
                 let render_command_buffer = render_command_buffer_builder.build().unwrap();
 
+                let mut ui_cmd_buf_builder = AutoCommandBufferBuilder::new(device.clone(), compute_queue.family()).unwrap();
+                
+                platform.prepare_render(&ui, &surface.window());
+                let draw_data = ui.render();
+                imgui_renderer.draw_commands(&mut ui_cmd_buf_builder, compute_queue.clone(), swapchain_images[image_num].clone(), draw_data).unwrap();
 
+
+                let ui_cmd_buf = ui_cmd_buf_builder.build().unwrap();
+
+                
+                cpu_rendering_time = cpu_rendering_start.elapsed().as_secs_f32();
+                
                 let future = previous_frame_end.take().unwrap()
                     .join(acquire_future)
                     // rendering is done in a series of compute shader commands
                     .then_execute(compute_queue.clone(), render_command_buffer).unwrap()
+                    .then_execute(compute_queue.clone(), ui_cmd_buf).unwrap()
                     // present the frame when rendering is complete
                     .then_swapchain_present(compute_queue.clone(), swapchain.clone(), image_num)
                     .then_signal_fence_and_flush();
+                
 
                 match future {
                     Ok(future) => {
@@ -925,19 +1111,24 @@ fn main() {
                 frame_counts -= 1;
                 if frame_counts <= 0 {
                     use std::f32::consts::PI;
-                    frame_counts = FRAME_COUNTS / 10;
-                    let (t, t_var, fps, _) = fps.stats();
+                    frame_counts = FRAME_COUNTS;
+                    // let (t, t_var, fps, _) = fps.stats();
 
                     // print some debug information
-                    stdout().execute(MoveUp(4)).unwrap();
-                    println!("FPS: {:0<4.2} ({:0<5.3}ms +/- {:0<5.3}ms)  ", fps, t * 1000.0, t_var * 1000.0);
-                    println!("Position: {:0<5.3?}                        ", position);
-                    println!("Forward: {:0<5.3?}                         ", forward);
-                    println!("P/Y: {:0<5.3}/{:0<5.3}                     ", 180.0 * pitch / PI, 180.0 * yaw / PI);
+                    // stdout().execute(MoveUp(4)).unwrap();
+                    // println!("FPS: {:0<4.2} ({:0<5.3}ms +/- {:0<5.3}ms)  ", fps, t * 1000.0, t_var * 1000.0);
+                    // println!("Position: {:0<5.3?}                        ", position);
+                    // println!("Forward: {:0<5.3?}                         ", forward);
+                    // println!("P/Y: {:0<5.3}/{:0<5.3}                     ", 180.0 * pitch / PI, 180.0 * yaw / PI);
                 }
             },
-            _ => ()
+            ref event => {
+
+                platform.handle_event(imgui.io_mut(), surface.window(), &event);
+                
+            }
         }
+
         
         // input handling
         if input.update(event) {
@@ -946,7 +1137,7 @@ fn main() {
             let dt = input_time.elapsed().as_secs_f32();
             input_time = Instant::now();
 
-            let mut speed = 0.5;
+            let mut speed = 0.1;
 
             if input.key_held(VirtualKeyCode::W) {movement += forward;}
             if input.key_held(VirtualKeyCode::A) {movement += left;}
@@ -954,8 +1145,10 @@ fn main() {
             if input.key_held(VirtualKeyCode::D) {movement -= left;}
             if input.key_held(VirtualKeyCode::Space) {movement += up;}
             if input.key_held(VirtualKeyCode::LShift) {movement -= up;}
-            if input.key_held(VirtualKeyCode::LControl) {speed = 2.0;}
-            if input.key_held(VirtualKeyCode::LAlt) {speed = 0.1;}
+            if input.key_held(VirtualKeyCode::LControl) {speed = 1.0;}
+            if input.key_held(VirtualKeyCode::LAlt) {speed = 0.025;}
+
+            if input.key_pressed(VirtualKeyCode::Tab) {ui_enabled = !ui_enabled;}
 
             // ensure that movement on the diagonals isn't faster
 
@@ -966,11 +1159,11 @@ fn main() {
 
             if let Some((_mx, _my)) = input.mouse() {
 
+                let (dx, dy) = input.mouse_diff();
                 // let mx = mx - surface_width as f32 / 2.0;
                 // let my = my - surface_height as f32 / 2.0;
 
-                if input.mouse_held(0) {
-                    let (dx, dy) = input.mouse_diff();
+                if input.mouse_held(0) && !ui_wants_mouse_capture {
 
                     pitch += dy / 270.0;
                     yaw   += dx / 270.0;
@@ -997,22 +1190,6 @@ fn main() {
             
             if input.key_held(VirtualKeyCode::Escape) {*control_flow = ControlFlow::Exit;}
         }
+        
     });
 }
-
-
-/// This method is called once during initialization, then again whenever the window is resized
-fn update_dynamic_state(
-    images: &[Arc<SwapchainImage<Window>>],
-    dynamic_state: &mut DynamicState
-) {
-    let dimensions = images[0].dimensions();
-
-    let viewport = Viewport {
-        origin: [0.0, 0.0],
-        dimensions: [dimensions[0] as f32, dimensions[1] as f32],
-        depth_range: 0.0 .. 1.0,
-    };
-    dynamic_state.viewports = Some(vec!(viewport));
-}
-

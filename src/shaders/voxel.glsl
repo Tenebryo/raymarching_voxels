@@ -23,6 +23,8 @@
 #define AXIS_Y_MASK 2
 #define AXIS_Z_MASK 4
 
+const uvec3 AXIS_MASK_VEC = uvec3(AXIS_X_MASK, AXIS_Y_MASK, AXIS_Z_MASK);
+
 #define INCIDENCE_X 0
 #define INCIDENCE_Y 1
 #define INCIDENCE_Z 2
@@ -41,11 +43,18 @@ layout(binding = VOXEL_BINDING_OFFSET + 1) buffer VoxelMaterialData {
     uint lod_materials[];
 };
 
+
+uint idot(uvec3 a, uvec3 b) {
+    return uint(dot(a,b));
+}
+
 vec2 project_cube(vec3 id, vec3 od, vec3 mn, vec3 mx, out uint incidence_min, out uint incidence_max) {
 
     vec3 tmn = fma(id, mn, od);
     vec3 tmx = fma(id, mx, od);
 
+
+/*
     float ts;
     if (tmn.x > tmn.z) {
         incidence_min = INCIDENCE_X;
@@ -74,6 +83,34 @@ vec2 project_cube(vec3 id, vec3 od, vec3 mn, vec3 mx, out uint incidence_min, ou
         incidence_max = INCIDENCE_Y;
         te = tmx.y;
     }
+
+/*/
+
+
+    float ts = max(tmn.x, max(tmn.y, tmn.z));
+
+    float te = min(tmx.x, min(tmx.y, tmx.z));
+    
+    // if (tmx.x < tmx.z) {
+    //     incidence_max = INCIDENCE_X;
+    //     te = tmx.x;
+    // } else {
+    //     incidence_max = INCIDENCE_Z;
+    //     te = tmx.z;
+    // }
+
+    // if (tmx.y < te) {
+    //     incidence_max = INCIDENCE_Y;
+    //     te = tmx.y;
+    // }
+
+    
+    if (te == tmx.x) {incidence_max = INCIDENCE_X;}
+    if (te == tmx.y) {incidence_max = INCIDENCE_Y;}
+    if (te == tmx.z) {incidence_max = INCIDENCE_Z;}
+
+// */
+    
 
     return vec2(ts, te);
 }
@@ -181,21 +218,27 @@ uint select_child(vec3 pos, float scale, vec3 o, vec3 d, float t) {
     vec3 p = fma(d, vec3(t), o) - pos - scale;
     // vec3 p = o + d * t - pos - scale;
 
+    uvec3 less = uvec3(lessThan(p, vec3(0)));
+
     uint idx = 0;
 
-    idx |= p.x < 0 ? 0 : AXIS_X_MASK;
-    idx |= p.y < 0 ? 0 : AXIS_Y_MASK;
-    idx |= p.z < 0 ? 0 : AXIS_Z_MASK;
+    // idx |= p.x < 0 ? 0 : AXIS_X_MASK;
+    // idx |= p.y < 0 ? 0 : AXIS_Y_MASK;
+    // idx |= p.z < 0 ? 0 : AXIS_Z_MASK;
+
+    idx = idot(less, AXIS_MASK_VEC);
 
     return idx;
 }
 
 uint select_child_bit(vec3 pos, float scale, vec3 o, vec3 d, float t) {
     vec3 p = fma(d, vec3(t), o) - pos - scale;
+
+    uvec3 s = uvec3(greaterThan(p, vec3(0)));
+    // uvec3 s = uvec3(uint(p.x > 0), uint(p.y > 0), uint(p.z > 0));
     
-    uvec3 s = uvec3(uint(p.x > 0), uint(p.y > 0), uint(p.z > 0));
-    
-    return AXIS_X_MASK * s.x + AXIS_Y_MASK * s.y + AXIS_Z_MASK * s.z;
+    // return AXIS_X_MASK * s.x + AXIS_Y_MASK * s.y + AXIS_Z_MASK * s.z;
+    return idot(s, AXIS_MASK_VEC);
 }
 
 uvec3 child_cube( uvec3 pos, uint scale, uint idx) {
@@ -217,13 +260,15 @@ uint highest_differing_bit(uvec3 a, uvec3 b) {
 
 uint extract_child_slot(uvec3 pos, uint scale) {
 
-    uvec3 d = (pos & scale);
+    uvec3 d = uvec3(equal(pos & scale, uvec3(0)));
 
-    uint idx = 0;
+    // uint idx = 0;
 
-    idx |= (d.x == 0) ? 0 : AXIS_X_MASK;
-    idx |= (d.y == 0) ? 0 : AXIS_Y_MASK;
-    idx |= (d.z == 0) ? 0 : AXIS_Z_MASK;
+    // idx |= (d.x == 0) ? 0 : AXIS_X_MASK;
+    // idx |= (d.y == 0) ? 0 : AXIS_Y_MASK;
+    // idx |= (d.z == 0) ? 0 : AXIS_Z_MASK;
+
+    uint idx = idot(d, AXIS_MASK_VEC);
 
     return idx;
 }
@@ -232,7 +277,8 @@ uint extract_child_slot_bfe(uvec3 pos, uint depth) {
 
     uvec3 d = bitfieldExtract(pos, int(depth), 1);
 
-    return AXIS_X_MASK * d.x + AXIS_Y_MASK * d.y + AXIS_Z_MASK * d.z;
+    // return AXIS_X_MASK * d.x + AXIS_Y_MASK * d.y + AXIS_Z_MASK * d.z;
+    return idot(d, AXIS_MASK_VEC);
 }
 
 #define VOXEL_MARCH_MISS 0
@@ -312,7 +358,7 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
     vec2 tc, tv;
 
     // very hot loop
-    while (iterations < 512) {
+    while (iterations < 1024) {
         iterations += 1;
 
         uint new_incidence;
@@ -375,26 +421,34 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
         uint mask = 0;
         uint bit_diff = 0;
 
-        switch (incidence) {
-        case INCIDENCE_X:
-            uint px = pos.x;
-            pos.x += scale;
-            bit_diff = px ^ pos.x;
-            // mask = AXIS_X_MASK;
-            break;
-        case INCIDENCE_Y:
-            uint py = pos.y;
-            pos.y += scale;
-            bit_diff = py ^ pos.y;
-            // mask = AXIS_Y_MASK;
-            break;
-        case INCIDENCE_Z:
-            uint pz = pos.z;
-            pos.z += scale;
-            bit_diff = pz ^ pos.z;
-            // mask = AXIS_Z_MASK;
-            break;
-        }
+        // switch (incidence) {
+        // case INCIDENCE_X:
+        //     uint px = pos.x;
+        //     pos.x += scale;
+        //     bit_diff = px ^ pos.x;
+        //     // mask = AXIS_X_MASK;
+        //     break;
+        // case INCIDENCE_Y:
+        //     uint py = pos.y;
+        //     pos.y += scale;
+        //     bit_diff = py ^ pos.y;
+        //     // mask = AXIS_Y_MASK;
+        //     break;
+        // case INCIDENCE_Z:
+        //     uint pz = pos.z;
+        //     pos.z += scale;
+        //     bit_diff = pz ^ pos.z;
+        //     // mask = AXIS_Z_MASK;
+        //     break;
+        // }
+
+        uvec3 incidence_mask = uvec3(incidence == INCIDENCE_X, incidence == INCIDENCE_Y, incidence == INCIDENCE_Z);
+
+        uvec3 p = pos;
+        bit_diff = idot((pos + scale) ^ pos, incidence_mask);
+        pos += scale * incidence_mask;
+
+        // bit_diff = p.x | p.y | p.z;
 
         mask = (1 << incidence);
         idx ^= mask;

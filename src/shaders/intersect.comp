@@ -11,8 +11,9 @@ layout(r32f, binding = 3) uniform image2D dImage;  // depth
 layout(r32ui, binding = 4) uniform uimage2D mImage;   // material index
 layout(rgba32ui, binding = 5) uniform uimage2D sImage;   // random seed index
 layout(binding = 6) uniform sampler3D blue_noise;   // random noise
+layout(rgba32ui, binding = 7) uniform uimage2D iteration_buf;   // random noise
 
-#define VOXEL_BINDING_OFFSET 7
+#define VOXEL_BINDING_OFFSET 8
 #include "voxel.glsl"
 
 layout(push_constant) uniform IntersectPushConstants {
@@ -22,7 +23,7 @@ layout(push_constant) uniform IntersectPushConstants {
     uint max_depth;
     vec3 camera_up;
     float render_dist;
-    uint noise_idx;
+    uvec3 noise_idx;
     uint noise_frames;
 };
 
@@ -39,6 +40,14 @@ void main() {
     float aspect_ratio = float(size.x) / float(size.y);
 
     if (idx.x < size.x && idx.y < size.y) {
+
+
+        vec4 noise_value_0 = texture(blue_noise, vec3(idx / vec2(noise_frames), noise_idx.x / float(noise_frames)));
+        vec4 noise_value_1 = texture(blue_noise, vec3(4 * idx / vec2(noise_frames), noise_idx.y / float(noise_frames)));
+        vec4 noise_value_2 = texture(blue_noise, vec3(16 * idx / vec2(noise_frames), noise_idx.z / float(noise_frames)));
+
+        vec4 noise_value = noise_value_0 + noise_value_1 + noise_value_2;
+
         // calculate ray for this pixel by constructing a virtual screen
         vec3 vx = normalize(cross(camera_forward, camera_up));
         vec3 vy = normalize(cross(camera_forward, vx));
@@ -85,11 +94,6 @@ void main() {
         vec3 p = camera_origin + ray_dir * dist;
         vec3 n = INCIDENCE_NORMAL_VECTORS[incidence] * sign(-ray_dir);
 
-        vec4 noise_value = texture(blue_noise, vec3(idx / vec2(noise_frames), noise_idx / float(noise_frames)));
-
-        uint seed_shift_0 = idx.x * 531 + idx.y * 73;
-        uint seed_shift_1 = idx.x * 91 + idx.y * 347;
-
         uint noise_scale = 1024;
 
         if (hit) {
@@ -98,14 +102,14 @@ void main() {
             imageStore(pImage, idx, vec4(p, 1.0));
             imageStore(mImage, idx, uvec4(material));
             imageStore(sImage, idx, uvec4(noise_value * noise_scale));
-            // imageStore(sImage, idx, uvec4(frame_idx + seed_shift_0, mod(frame_idx + seed_shift_1 + 761, 1000007), 0, 0));
+            imageStore(iteration_buf, idx, uvec4(iter, 0, 0, 0));
         } else {
             imageStore(nImage, idx, vec4(0.0));
             imageStore(dImage, idx, vec4(render_dist+1));
             imageStore(pImage, idx, vec4(0.0));
             imageStore(mImage, idx, uvec4(0));
             imageStore(sImage, idx, uvec4(noise_value * noise_scale));
-            // imageStore(sImage, idx, uvec4(frame_idx + seed_shift_0, mod(frame_idx + seed_shift_1 + 761, 1000007), 0, 0));
+            imageStore(iteration_buf, idx, uvec4(iter, 0, 0, 0));
         }
     }
 }

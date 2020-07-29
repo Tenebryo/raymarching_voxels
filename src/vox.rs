@@ -20,9 +20,19 @@ pub enum Voxel {
     Branch(i32)
 }
 
+#[derive(Copy, Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct Material {
+    pub albedo : [f32; 3],
+    pub metalness : f32,
+    pub emission : [f32; 3],
+    pub roughness : f32,
+}
+
+#[derive(Debug, Clone)]
 pub struct Triangle {
     pub points : [Vec3; 3],
     pub normal : Vec3,
+    pub mat    : u16,
 }
 
 // these redefinition shenanigans are necessary because serde can't quite derive
@@ -301,23 +311,139 @@ impl VoxelChunk {
         chunk
     }
 
+    /// process a distance equation array into a DAG.
+    pub fn from_distance_equation<F : FnMut(f32, f32, f32) -> f32>(depth : usize, mut implicit : F) -> Self {
+
+        assert!(depth < MAX_DAG_DEPTH, "Depth is too large: {} >= {}", depth, MAX_DAG_DEPTH);
+
+        let size = 1 << depth;
+
+        fn recurse_distance_equation<F : FnMut(f32, f32, f32) -> f32>(
+            s : &mut VoxelChunk, min : [usize; 3], size : usize, implicit : &mut F, rscale : f32,
+            dedup : &mut HashMap<VChildDescriptor, i32>
+        ) -> i32 {
+
+            const SQRT_THREE : f32 = 1.732050807568877293527446341505872366942805253810380628055;
+
+            let v = implicit(
+                rscale * (min[0] as f32 + 0.5 * size as f32),
+                rscale * (min[1] as f32 + 0.5 * size as f32),
+                rscale * (min[2] as f32 + 0.5 * size as f32)
+            );
+
+            let bounding_radius = rscale * size as f32 * SQRT_THREE;
+
+            if size <= 1 {
+                // once we reach size 1, check if the object intersects the implicit region
+                if min[0] == 0 && min[1] == 0 && min[2] == 0 {
+                    // println!("maybe intersection {} < {}", v, bounding_radius);
+                }
+                return if v < bounding_radius { -1 } else { 0 };
+            }
+            
+            if v > bounding_radius {
+                // the voxel does not intersect the cube at all based on the distance equation
+                // println!("no intersection {} {}", v, bounding_radius);
+
+                return 0;
+            }
+
+            const box_offsets : [[usize; 3]; 8] = [
+                [0, 0, 0],
+                [1, 0, 0],
+                [0, 1, 0],
+                [1, 1, 0],
+                [0, 0, 1],
+                [1, 0, 1],
+                [0, 1, 1],
+                [1, 1, 1]
+            ];
+
+            let mut voxel = VChildDescriptor{
+                sub_voxels : [0; 8],
+            };
+
+            let half_size = size >> 1;
+
+            let mut is_uniform = true;
+
+            for i in 0..8 {
+                let bmin = [
+                    min[0] + box_offsets[i][0] * half_size,
+                    min[1] + box_offsets[i][1] * half_size,
+                    min[2] + box_offsets[i][2] * half_size
+                ];
+
+                voxel.sub_voxels[i] = recurse_distance_equation(s, bmin, half_size, implicit, rscale, dedup);
+
+                if voxel.sub_voxels[i] != voxel.sub_voxels[0] || voxel.sub_voxels[i] > 0 {
+                    // the subvoxels are not all the same leaf node, so this voxel is not uniform
+                    is_uniform = false;
+                }
+            }
+
+            
+            if is_uniform {
+                return voxel.sub_voxels[0];
+            }
+
+            if let Some(&id) = dedup.get(&voxel) {
+                // this node is a duplicate
+                id
+            } else {
+                // this node is new, so add it
+                s.voxels.push(voxel);
+                let id = s.voxels.len() as i32;
+                dedup.insert(voxel, id);
+                id
+            }
+        }
+
+        let mut chunk = VoxelChunk::empty();
+        chunk.voxels.clear();
+        // we build a list of unique voxels and store them in here
+        let mut dedup : HashMap<VChildDescriptor, i32> = HashMap::new();
+
+        recurse_distance_equation(&mut chunk, [0,0,0], size, &mut implicit, 1.0 / (size as f32), &mut dedup);
+
+        chunk.voxels.reverse();
+
+        //fixup the subvoxel pointers (we reversed the order)
+        let n = chunk.voxels.len() as i32;
+        for i in 0..(chunk.voxels.len()) {
+            for j in 0..8 {
+                let sv = chunk.voxels[i].sub_voxels[j];
+                if sv > 0 {
+                    let svi = n - sv + 1;
+                    chunk.voxels[i].sub_voxels[j] = svi;
+                }
+            }
+        }
+
+        chunk
+    }
+
     /// Convert an obj file into a voxel chunk format.
     /// Only places voxels intersect triangles will be made solid
-    pub fn from_obj_shell(depth : usize, triangles: &[Triangle], corner : Vec3, size : f32) -> VoxelChunk {
+    pub fn from_mesh(depth : usize, triangles: &[Triangle], corner : Vec3, size : f32) -> VoxelChunk {
         assert!(depth < MAX_DAG_DEPTH, "Depth is too large: {} >= {}", depth, MAX_DAG_DEPTH);
 
 
         fn recursive_create_shell(
             s : &mut VoxelChunk, d : usize, min : Vec3, size : f32, 
             tris : &[Triangle], indexes : &mut Vec<usize>, start : usize, 
-            dedup : &mut HashMap<VChildDescriptor, i32>
+            dedup : &mut HashMap<VChildDescriptor, i32>,
+            counts : &mut HashMap<u16, i32>
         ) -> i32 {
 
             if d == 0 {
                 // if we reach the max resolution, check if there are intersecting triangles
                 if start < indexes.len() {
                     // solid material
-                    return -1;
+                    
+                    let m = tris[indexes[start]].mat;
+
+                    return - (m as i32 + 1);
                 } else {
                     // air
                     return 0;
@@ -357,7 +483,7 @@ impl VoxelChunk {
                     }
                 }
 
-                voxel.sub_voxels[i] = recursive_create_shell(s, d - 1, bmin, size * 0.5, tris, indexes, end, dedup);
+                voxel.sub_voxels[i] = recursive_create_shell(s, d - 1, bmin, size * 0.5, tris, indexes, end, dedup, counts);
 
                 indexes.truncate(end);
             }
@@ -378,10 +504,12 @@ impl VoxelChunk {
         chunk.voxels.clear();
         // we build a list of unique voxels and store them in here
         let mut dedup : HashMap<VChildDescriptor, i32> = HashMap::new();
+        // a reused hashmap to count most common material
+        let mut counts : HashMap<u16, i32> = HashMap::new();
         // indexes acts as a simple growing allocator for the recursion
         let mut indexes = (0..(triangles.len())).collect::<Vec<_>>();
 
-        recursive_create_shell(&mut chunk, depth, corner, size, &triangles, &mut indexes, 0, &mut dedup);
+        recursive_create_shell(&mut chunk, depth, corner, size, &triangles, &mut indexes, 0, &mut dedup, &mut counts);
 
         chunk.voxels.reverse();
 
@@ -688,6 +816,7 @@ impl VoxelChunk {
 
     /// Translates the voxel chunk by fractions of its size
     pub fn translate_fractional(&mut self, x : usize, y : usize, z : usize) {
+        unimplemented!()
     }
 
     /// Writes the other voxel chunk into this one. Whether the other voxels overwrite or not is
@@ -774,6 +903,53 @@ impl VoxelChunk {
 
         self.lod_materials = self.voxels.iter().map(|_| std::u32::MAX).collect::<Vec<u32>>();
         recurse_calculate_lod_materials(self, 0);
+    }
+
+    /// traverse the voxel data and determine the proper material to display for an LOD
+    pub fn detect_cycles(&self) -> bool {
+
+        // Recursive helper function to calculate the most common material from each voxel's subvoxels
+        fn recurse_detect_cycles(s : &VoxelChunk, i : usize, visited : &mut [bool], safe : &mut [bool], cycle : &mut Vec<usize>) -> bool {
+            let v = s.voxels[i];
+
+            if visited[i] {
+                return true;
+            }
+
+            visited[i] = true;
+
+            // count the subvoxel materials
+            for j in 0..8 {
+                let sv = v.sub_voxels[j];
+                if sv > 0 {
+                    let id = sv as usize - 1;
+
+                    if safe[id] {
+                        continue;
+                    }
+
+                    let b = recurse_detect_cycles(s, id, visited, safe, cycle);
+                    if b {
+                        return true;
+                    }
+                }
+            }
+
+            visited[i] = false;
+            safe[i] = true;
+            false
+        }
+
+        let mut visited = self.voxels.iter().map(|_| false).collect::<Vec<bool>>();
+        let mut safe    = self.voxels.iter().map(|_| false).collect::<Vec<bool>>();
+        let mut cycle = vec![];
+        let has_cycle = recurse_detect_cycles(self, 0, &mut visited, &mut safe, &mut cycle);
+
+        if has_cycle {
+            println!("{} {:?}", cycle.len(), cycle);
+        }
+
+        has_cycle
     }
 }
 
@@ -869,6 +1045,32 @@ fn aabb_triangle_test(aabb_min : Vec3, aabb_max : Vec3, triangle : &Triangle) ->
 }
 
 
+fn cartesian_to_barycentric(tri : &Triangle, mut p : Vec3) -> Vec3 {
+    // project point onto triangle:
+    p *= tri.normal.dot(tri.points[0]) / tri.normal.dot(p);
+
+    p
+}
+
+use std::path::Path;
+
+use image;
+fn read_tga<P : AsRef<Path>>(path : P) -> image::DynamicImage {
+    let bytes = std::fs::read(path).unwrap();
+
+    
+    let byte_stream = std::io::Cursor::new(&bytes);
+
+    let mut reader = image::io::Reader::new(byte_stream);
+
+    reader.set_format(image::ImageFormat::Tga);
+
+    let image = reader.decode().unwrap();
+
+    image    
+}
+
+
 // ###############################################################################################################################################
 // ###############################################################################################################################################
 // ###############################################################################################################################################
@@ -908,6 +1110,7 @@ fn test_voxel_dag_obj_shell_teapot() {
                     triangles.push(Triangle{
                         points : [v0, v1, v2],
                         normal : (v0 - v1).cross(v1 - v2),
+                        mat    : 1,
                     });
                 }
             }
@@ -936,7 +1139,7 @@ fn test_voxel_dag_obj_shell_teapot() {
     use std::time::*;
 
     let start = Instant::now();
-    let mut vchunk = VoxelChunk::from_obj_shell(9, &triangles, min, max_size);
+    let mut vchunk = VoxelChunk::from_mesh(9, &triangles, min, max_size);
     let elapsed = start.elapsed();
 
     println!("Time to voxelize: {:?}", elapsed);
@@ -950,19 +1153,98 @@ fn test_voxel_dag_obj_shell_teapot() {
 
 #[test]
 fn test_voxel_dag_obj_shell_sponza() {
-    use obj::*;
+    use obj::Obj;
     use std::path::Path;
     use std::fs;
 
-    let obj_data = Obj::load(&Path::new("./data/obj/Sponza/sponza.obj")).expect("Failed to load obj file");
+    let mut obj_data = Obj::load(&Path::new("./data/obj/Sponza/sponza.obj")).expect("Failed to load obj file");
 
 
     let mut triangles = vec![];
+
+    let mut materials = HashMap::new();
+
+    const DEPTH : usize = 12;
+
+    use std::path::PathBuf;
+    let obj_root = PathBuf::from("./data/obj/Sponza/");
+    let mut material_list = vec![Material::default(); materials.len()];
+
+    for mtl in obj_data.data.material_libs.iter_mut() {
+        use std::io::Read;
+        use std::fs::File;
+
+        mtl.reload(File::open(&obj_root.join(mtl.filename.clone())).unwrap()).unwrap();
+
+        for mat in &mtl.materials {
+            let kd = if let Some(kd_tex_file) = &mat.map_kd {
+                
+                println!("Loading texture: {:?}", kd_tex_file);
+
+                let img = read_tga(obj_root.join(kd_tex_file));
+
+                println!("  img: {:?}", img.color());
+
+                let img = img.into_rgb();
+
+                let (w, h) = img.dimensions();
+
+                println!("  Averaging...");
+
+                let mut color = [0.0; 3];
+
+                for (_,_,&image::Rgb(p)) in img.enumerate_pixels() {
+                    color[0] += p[0] as f32;
+                    color[1] += p[1] as f32;
+                    color[2] += p[2] as f32;
+                }
+
+                color[0] /= (w * h * 255) as f32;
+                color[1] /= (w * h * 255) as f32;
+                color[2] /= (w * h * 255) as f32;
+
+                println!("  Color: {:?}", color);
+
+                color
+            } else {
+                [1.0; 3]
+            };
+
+            let next =  materials.len();
+            let id   = *materials.entry(mat.name.clone()).or_insert(next);
+
+            let mut kdd = mat.kd.unwrap_or([0.0; 3]);
+
+            kdd[0] *= kd[0];
+            kdd[1] *= kd[1];
+            kdd[2] *= kd[2];
+        
+            material_list[id] = Material {
+                albedo : kdd,
+                metalness : mat.km.unwrap_or(0.0),
+                emission : mat.ke.unwrap_or([0.0; 3]),
+                roughness : 0.3,
+            };
+        }
+    }
+
+    println!("Material Count: {}", materials.len());
+
+    println!("Processing Triangles...");
 
     for o in 0..(obj_data.data.objects.len()) {
         let object = &obj_data.data.objects[o];
         for g in 0..(object.groups.len()) {
             let group = &object.groups[g];
+
+            let next = materials.len();
+
+            let id = if let Some(obj::ObjMaterial::Ref(s)) = &group.material {
+                *materials.entry(s.clone()).or_insert(next) as u16
+            } else {
+                0
+            };
+
             for p in 0..(group.polys.len()) {
                 let poly = &group.polys[p];
                 for v in 2..(poly.0.len()) {
@@ -978,11 +1260,16 @@ fn test_voxel_dag_obj_shell_sponza() {
                     triangles.push(Triangle{
                         points : [v0, v1, v2],
                         normal : (v0 - v1).cross(v1 - v2),
+                        // mat    : 0,
+                        mat    : id,
                     });
                 }
             }
         }
     }
+
+    println!("Triangles: {}", triangles.len());
+
 
     let mut min = Vec3::new(f32::MAX, f32::MAX, f32::MAX);
     let mut max = Vec3::new(f32::MIN, f32::MIN, f32::MIN);
@@ -1001,22 +1288,113 @@ fn test_voxel_dag_obj_shell_sponza() {
     if size.y > max_size {max_size = size.y;}
     if size.z > max_size {max_size = size.z;}
 
-    println!("Triangles: {}", triangles.len());
-
+    
+    println!("Constructing SVDAG...");
     use std::time::*;
-
+    
     let start = Instant::now();
-    let vchunk = VoxelChunk::from_obj_shell(12, &triangles, min, max_size);
+    let vchunk = VoxelChunk::from_mesh(DEPTH, &triangles, min, max_size);
     let elapsed = start.elapsed();
-
+    
     println!("Time to voxelize: {:?}", elapsed);
     println!("DAG nodes: {}", vchunk.len());
+    
+    let serialized = bincode::serialize(&vchunk).unwrap();
+    let serialized_mats = bincode::serialize(&material_list).unwrap();
 
+    fs::write(format!("./data/dag/sponza_mats.svdag"), serialized).unwrap();
+    fs::write("./data/dag/sponza_mats.mats", serialized_mats).unwrap();
+}
+
+
+#[test]
+fn test_voxel_dag_obj_shell_hairball() {
+    use obj::Obj;
+    use std::path::Path;
+    use std::fs;
+
+    let obj_data = Obj::load(&Path::new("./data/obj/hairball.obj")).expect("Failed to load obj file");
+
+    let mut triangles = vec![];
+
+    // let mut materials = HashMap::new();
+
+    const DEPTH : usize = 10;
+
+    println!("Processing Triangles...");
+
+    for o in 0..(obj_data.data.objects.len()) {
+        let object = &obj_data.data.objects[o];
+        for g in 0..(object.groups.len()) {
+            let group = &object.groups[g];
+
+            // let next = materials.len();
+
+            // let id = if let Some(obj::ObjMaterial::Ref(s)) = &group.material {
+            //     *materials.entry(s.clone()).or_insert(next) as u16
+            // } else {
+            //     0
+            // };
+
+            for p in 0..(group.polys.len()) {
+                let poly = &group.polys[p];
+                for v in 2..(poly.0.len()) {
+                    let v0 = obj_data.data.position[poly.0[0].0];
+                    let v1 = obj_data.data.position[poly.0[v-1].0];
+                    let v2 = obj_data.data.position[poly.0[v].0];
+
+
+                    let v0 = Vec3::new(v0[0], v0[1], v0[2]);
+                    let v1 = Vec3::new(v1[0], v1[1], v1[2]);
+                    let v2 = Vec3::new(v2[0], v2[1], v2[2]);
+                    
+                    triangles.push(Triangle{
+                        points : [v0, v1, v2],
+                        normal : (v0 - v1).cross(v1 - v2),
+                        mat    : 0,
+                        // mat    : id,
+                    });
+                }
+            }
+        }
+    }
+
+    println!("Triangles: {}", triangles.len());
+
+
+    let mut min = Vec3::new(f32::MAX, f32::MAX, f32::MAX);
+    let mut max = Vec3::new(f32::MIN, f32::MIN, f32::MIN);
+
+    for [x,y,z] in obj_data.data.position {
+        if x < min.x {min.x = x;}
+        if y < min.y {min.y = y;}
+        if z < min.z {min.z = z;}
+        if x > max.x {max.x = x;}
+        if y > max.y {max.y = y;}
+        if z > max.z {max.z = z;}
+    }
+
+    let size = max - min;
+    let mut max_size = size.x;
+    if size.y > max_size {max_size = size.y;}
+    if size.z > max_size {max_size = size.z;}
+
+    
+    println!("Constructing SVDAG...");
+    use std::time::*;
+    
+    let start = Instant::now();
+    let vchunk = VoxelChunk::from_mesh(DEPTH, &triangles, min, max_size);
+    let elapsed = start.elapsed();
+    
+    println!("Time to voxelize: {:?}", elapsed);
+    println!("DAG nodes: {}", vchunk.len());
+    
     let serialized = bincode::serialize(&vchunk).unwrap();
 
-    fs::write("./data/dag/sponza.svdag", serialized).unwrap();
-
+    fs::write(format!("./data/dag/hairball.svdag"), serialized).unwrap();
 }
+
 
 #[test]
 fn test_voxel_dag_tri_shell() {
@@ -1031,6 +1409,7 @@ fn test_voxel_dag_tri_shell() {
         Triangle{
             points : [v0, v1, v2],
             normal : (v0 - v1).cross(v1 - v2),
+            mat    : 1,
         }
     ];
 
@@ -1042,7 +1421,7 @@ fn test_voxel_dag_tri_shell() {
     use std::time::*;
 
     let start = Instant::now();
-    let vchunk = VoxelChunk::from_obj_shell(8, &triangles, min, size);
+    let vchunk = VoxelChunk::from_mesh(8, &triangles, min, size);
     let elapsed = start.elapsed();
 
     println!("DAG nodes: {}", vchunk.len());
@@ -1138,7 +1517,7 @@ fn test_voxel_dag_implicit() {
 
     let start = Instant::now();
 
-    let mut chunk = VoxelChunk::from_dense_implicit(8, |x, y, z| {
+    let chunk = VoxelChunk::from_dense_implicit(8, |x, y, z| {
         let scale = 1.0/16.0;
         let threshold = 0.05;
 
@@ -1146,7 +1525,7 @@ fn test_voxel_dag_implicit() {
         let y = y as f32 * scale;
         let z = z as f32 * scale;
 
-        let sdf = x.sin() * y.cos() + y.sin() + z.cos() + z.sin() * x.cos();
+        let sdf = x.sin() * y.cos() + y.sin() * z.cos() + z.sin() * x.cos();
 
         if sdf.abs() < threshold {
             1
@@ -1168,6 +1547,112 @@ fn test_voxel_dag_implicit() {
     fs::write(out_path, serialized).unwrap();
 
     println!("Num Voxels: {} (from {})", chunk.voxels.len(), 512*512*512);
+}
+
+
+#[test]
+fn test_voxel_dag_de_gyroid() {
+    use std::time::*;
+    use std::fs;
+    use bincode;
+    use std::path::*;
+
+    println!("Compressing DE gyroid...");
+
+    let start = Instant::now();
+
+    let chunk = VoxelChunk::from_distance_equation(10, |x, y, z| {
+        let scale = std::f32::consts::PI * 4.0;
+
+        let x = x as f32 * scale;
+        let y = y as f32 * scale;
+        let z = z as f32 * scale;
+
+        let sdf = x.sin() * y.cos() + y.sin() * z.cos() + z.sin() * x.cos();
+
+        sdf.abs() / scale
+    });
+
+    let runtime = start.elapsed();
+
+    println!("Compression took {:?}", runtime);
+    
+    println!("Num Voxels: {} (uncompress: {})", chunk.voxels.len(), 512*512*512);
+
+    assert!(!chunk.detect_cycles(), "Cycle Detected!");
+
+    let out_path = Path::new("./data/dag/gyroid_de.svdag");
+
+    println!("Writing File... ({:?})", out_path);
+
+    let serialized = bincode::serialize(&chunk).unwrap();
+
+    fs::write(out_path, serialized).unwrap();
+}
+
+#[test]
+fn test_voxel_dag_de_mandelbulb() {
+    use std::time::*;
+    use std::fs;
+    use bincode;
+    use std::path::*;
+
+    println!("Compressing DE mandelbulb...");
+
+    let start = Instant::now();
+    const DEPTH : usize = 11;
+    const DIM : usize = 1 << DEPTH;
+
+    let chunk = VoxelChunk::from_distance_equation(DEPTH, |x, y, z| {
+        const SCALE : f32 = 4.0;
+
+        let pos = Vec3::new(x - 0.5, y - 0.5, z - 0.5) * SCALE;
+        let mut z = pos;
+        let mut dr = 1.0;
+        let mut r = 0.0;
+
+        const ITERS : usize = 8;
+        const POWER : f32 = 8.0;
+        const BAILOUT : f32 = 2.0;
+
+        for _ in 0..ITERS {
+            r = z.magnitude(); //length(z);
+            if r>BAILOUT {
+                break
+            };
+            
+            // convert to polar coordinates
+            let mut theta = (z.z/r).acos();
+            let mut phi = (z.y).atan2(z.x);
+            dr =  r.powf( POWER -1.0) * POWER * dr + 1.0;
+            
+            // scale and rotate the point
+            let zr = r.powf(POWER);
+            theta = theta*POWER;
+            phi = phi*POWER;
+            
+            // convert back to cartesian coordinates
+            z = zr*Vec3::new(theta.sin()*phi.cos(), phi.sin()*theta.sin(), theta.cos());
+            z += pos;
+        }
+        return 0.5*r.ln()*r/dr / SCALE;
+    });
+
+    let runtime = start.elapsed();
+
+    println!("Compression took {:?}", runtime);
+    
+    println!("Num Voxels: {} (uncompressed: {} ({:2.1}%))", chunk.voxels.len(), DIM*DIM*DIM,chunk.voxels.len() as f32 / (DIM*DIM*DIM) as f32);
+
+    assert!(!chunk.detect_cycles(), "Cycle Detected!");
+
+    let out_path = Path::new("./data/dag/mandelbulb.svdag");
+
+    println!("Writing File... ({:?})", out_path);
+
+    let serialized = bincode::serialize(&chunk).unwrap();
+
+    fs::write(out_path, serialized).unwrap();
 }
 
 

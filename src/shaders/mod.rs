@@ -74,6 +74,14 @@ pub mod normal_blend_cs {
     }
 }
 
+pub mod postprocess_cs {
+    vulkano_shaders::shader!{
+        ty: "compute",
+        path: "src/shaders/postprocess.comp",
+        include: ["src/shaders/"],
+    }
+}
+
 // Push Constant Types
 pub use update_cs::ty::UpdatePushConstantData;
 pub use denoise_cs::ty::DenoisePushConstantData;
@@ -84,6 +92,7 @@ pub use light_bounce_cs::ty::LightBouncePushConstantData;
 pub use light_occlude_cs::ty::LightOccludePushConstantData;
 pub use light_combine_cs::ty::LightCombinePushConstantData;
 pub use normal_blend_cs::ty::NormalBlendPushConstantData;
+pub use postprocess_cs::ty::PostprocessPushConstantData;
 
 // Graphics Primitive Types
 // pub use light_bounce_cs::ty::BRDF;

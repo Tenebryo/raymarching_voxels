@@ -58,6 +58,8 @@ void main() {
             }
         }
 
+        weight = max(weight, 1e-6);
+
         if (normed) {
             imageStore(out_normal_buf, idx, vec4(normalize(integral), 1));
         } else {

@@ -12,9 +12,12 @@ winit = "0.22"
 log = "0.4"
 winit_input_helper = "0.6"
 env_logger = "0.7.1"
-vulkano = {git = "https://github.com/vulkano-rs/vulkano"}
-vulkano-shaders = {git = "https://github.com/vulkano-rs/vulkano"}
-vulkano-win = {git = "https://github.com/vulkano-rs/vulkano"}
+#vulkano = {git = "https://github.com/vulkano-rs/vulkano"}
+#vulkano-shaders = {git = "https://github.com/vulkano-rs/vulkano"}
+#vulkano-win = {git = "https://github.com/vulkano-rs/vulkano"}
+vulkano = "0.19.0"
+vulkano-shaders = "0.19.0"
+vulkano-win = "0.19.0"
 rand = "0.7.3"
 opensimplex = "0.2.0"
 cgmath = "0.17.0"
@@ -25,3 +28,7 @@ serde_json = "1.0.53"
 bincode = "1.2.1"
 nalgebra = "0.21.0"
 obj = "0.10.0"
+image = "0.23.8"
+imgui = "0.4.0"
+imgui-winit-support = "0.4.0"
+imgui-vulkano-renderer = {path = "../imgui-vulkano-renderer"}

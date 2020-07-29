@@ -26,17 +26,19 @@ layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
 layout(rgba32f,  binding = 1) readonly uniform image2D position_buf;
 layout(rgba32f,  binding = 2) readonly uniform image2D ldir_buf;
 layout(rgba32f,  binding = 3) uniform image2D light_buf;
+layout(rgba32ui, binding = 4) uniform uimage2D iteration_buf;
 
 #define TESTING_DEBUG 1
 
 // voxel geometry information and functions
-#define VOXEL_BINDING_OFFSET 4
+#define VOXEL_BINDING_OFFSET 5
 #include "voxel.glsl"
 
 layout(push_constant) uniform LightOccludePushConstantData {
     float render_dist;
     uint num_materials;
     uint max_depth;
+    uint bounce_idx;
 };
 
 const vec3 INCIDENCE_NORMAL_VECTORS[3] = {vec3(1,0,0), vec3(0,1,0), vec3(0,0,1)};
@@ -72,7 +74,7 @@ void main() {
             return;
         }
 
-        vec3 dir = ldd.xyz;
+        vec3 dir = normalize(ldd.xyz);
         float ldist = ldd.w;
 
         float dist = 0;
@@ -82,9 +84,9 @@ void main() {
         uint iterations = 0;
         uint vid = 0;
 
-        float advance = 0.01;
+        float advance = 0.0001;
 
-        bool hit = voxel_march(p + dir * advance, dir, max_depth, ldist+0.1, dist, incidence, vid, material, ret_code, iterations);
+        bool hit = voxel_march(p + dir * advance, dir, max_depth, ldist+0.001, dist, incidence, vid, material, ret_code, iterations);
 
         dist += advance;
 
@@ -100,9 +102,20 @@ void main() {
             // wrong material reference, we assume no material emission
             light = vec4(0,0,0,1);
         }
+
+
         // otherwise, we keep the light value from the light, which was set from the bounce shader
         // imageStore(light_buf, idx, vec4((hit ? vec3(0,1,0) : vec3(1,0,0)) * vec3(iterations), 1));
         // imageStore(light_buf, idx, vec4(h * (p + dist * dir), iterations / 100.0));
         imageStore(light_buf, idx, light);
+
+        
+        uvec4 itervec = imageLoad(iteration_buf, idx);
+        if (bounce_idx == 0) {
+            itervec.z = iterations;
+        } else {
+            itervec.w = iterations;
+        }
+        imageStore(iteration_buf, idx, uvec4(itervec));
     }
 }

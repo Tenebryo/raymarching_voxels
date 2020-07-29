@@ -1,0 +1,29 @@
+#version 450
+
+
+
+layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
+layout(rgba32f,  binding = 0) uniform image2D light_buf;
+layout(rgba32f,  binding = 1) uniform image2D swapchain_image;
+
+layout(push_constant) uniform PostprocessPushConstantData {
+    float exposure;
+};
+
+void main() {
+    ivec2 idx = ivec2(
+        gl_GlobalInvocationID.x,
+        gl_GlobalInvocationID.y
+    );
+
+    vec4 light = imageLoad(light_buf, idx);
+
+
+    // exposure HDR map
+    light.rgb = vec3(1.0) - exp(-light.rgb * exposure);
+    // Reinhard HDR map
+    // light.rgb = light.rgb / (vec3(1.0) + light.rgb);
+
+
+    imageStore(swapchain_image, idx, light);
+}

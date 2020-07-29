@@ -35,7 +35,7 @@ struct Material {
     vec3 emission;
     uint flags;
     float roughness;
-    float shininess;
+    float metalness;
 };
 
 //material information
@@ -54,7 +54,6 @@ layout(binding = 3) readonly buffer SpotLightData{
     SpotLight spots_lights[];
 };
 
-
 // g-buffer information
 layout(rgba32f,  binding = 4)  readonly uniform image2D position0_buf;
 layout(rgba32f,  binding = 5)  uniform image2D position1_buf;
@@ -69,9 +68,10 @@ layout(rgba32f,  binding = 13) uniform image2D ldir0_buf;
 layout(rgba32f,  binding = 14) uniform image2D ldir1_buf;
 layout(rgba32f,  binding = 15) uniform image2D light0_buf;
 layout(rgba32f,  binding = 16) uniform image2D light1_buf;
+layout(rgba32ui, binding = 17) uniform uimage2D iteration_buf;
 
 // voxel geometry information and functions
-#define VOXEL_BINDING_OFFSET 17
+#define VOXEL_BINDING_OFFSET 18
 #include "voxel.glsl"
 
 layout(push_constant) uniform LightBouncePushConstantData {
@@ -216,10 +216,11 @@ void main() {
             vec3 h_0 = vector_from_incident_angles(n.xyz, n.zxy, i_angles_0.x, i_angles_0.y);
 
             // h_0 = n.xyz;
-            h_0 = normalize(8 * n.xyz + h_0);
+            // h_0 = normalize(8 * n.xyz + h_0);
 
-            vec3 in_0 = calculate_incident_from_half_angle(out_0, h_0);
+            // vec3 in_0 = calculate_incident_from_half_angle(out_0, h_0);
             // vec3 in_0 = out_0;
+            vec3 in_0 = h_0;
 
             vec3 p0 = p.xyz;
 
@@ -233,6 +234,11 @@ void main() {
 
             // raytrace to the next intersection
             bool hit = voxel_march(p0 + in_0 * init_dist, in_0, max_depth, render_dist, dist, incidence, vox_id, vmat_1, code, iterations);
+
+            uvec4 itervec = imageLoad(iteration_buf, idx);
+            itervec.y = iterations;
+            imageStore(iteration_buf, idx, uvec4(itervec));
+
 
             if (hit) {
                 p1.w = 1.0;
@@ -268,8 +274,8 @@ void main() {
                 ldir0 = -directional_lights[li].direction;
                 ldir1 = ldir0;
 
-                ldir0 += rv1 * 0.1;
-                ldir1 += rv2 * 0.1;
+                ldir0 += rv1 * 0.2;
+                ldir1 += rv2 * 0.2;
 
                 ldir0 = normalize(ldir0);
                 ldir1 = normalize(ldir1);

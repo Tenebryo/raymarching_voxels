@@ -6,13 +6,21 @@ layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
 // color map in
 layout(rgba32f, binding = 0) readonly uniform image2D in_buf;
 // world positions in
-layout(rgba32f, binding = 1) readonly uniform image2D position_buf;
+layout(rgba32f, binding = 1) readonly uniform image2D position_in_buf;
 // color map out
 layout(rgba32f, binding = 2) uniform image2D out_buf;
-// we already know the world positions out (the positions from the current frame)
+// world positions out (occlusion depth tests)
+layout(rgba32f, binding = 3) uniform image2D position_out_buf;
+
+layout(r32ui, binding = 4) uniform uimage2D atomic_buf;
+
+layout(r32ui, binding = 5) readonly uniform uimage2D count_in_buf;
+
+layout(r32ui, binding = 6) uniform uimage2D count_out_buf;
 
 layout(push_constant) uniform ReprojectPushConstantData {
     vec3 origin;
+    uint depth_scale;
     vec3 forward;
     vec3 up;
 };
@@ -59,18 +67,19 @@ void main() {
         vec3 sy = normalize(cross(forward, sx));
 
         // get the world position
-        vec4 p = imageLoad(position_buf, idx);
+        vec4 p = imageLoad(position_in_buf, idx);
 
         if (p.w < 1e-6) {
-            // no information stored at this location
+            // no information stored at this location, reset count
             return;
         }
 
         vec3 wp = p.xyz;
 
-
         // vector/ray from new camera origin to world position of intersection
         vec3 v = wp - origin;
+
+        uint idepth = uint(length(v) * depth_scale);
 
         // check that the intersection is in front of the camera
         float d = dot(forward, v);
@@ -78,13 +87,25 @@ void main() {
         // intersect v into the new camera plane.
         v *= dot(forward, forward) / d;
 
+        v -= forward;
+
         // determine the new coordinates on the camera plane ([-ar, ar]x[-1, 1])
         vec2 uv = vec2(dot(sx, v) / aspect_ratio, dot(sy, v)) * 0.5 + 0.5;
 
         // new screen coordinates (floored)
         ivec2 nsc = ivec2(round(size * uv));
 
-        // store the previously rendered pixel in the new position
-        imageStore(out_buf, nsc, imageLoad(in_buf, idx));
+        imageAtomicMin(atomic_buf, nsc, idepth);
+
+        // synchronize work group
+        barrier();
+
+        uint cdepth = imageAtomicMin(atomic_buf, nsc, idepth);
+
+        if (cdepth == idepth) {
+            imageStore(out_buf, nsc, imageLoad(in_buf, idx));
+            imageStore(position_out_buf, nsc, p);
+            imageStore(count_out_buf, nsc, imageLoad(count_in_buf, idx) + 1);
+        }
     }
 }

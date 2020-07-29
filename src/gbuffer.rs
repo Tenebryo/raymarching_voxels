@@ -35,6 +35,18 @@ pub struct GBuffer {
     pub ldir1_buffer : Arc<StorageImage<Format>>,
     pub light0_buffer : Arc<StorageImage<Format>>,
     pub light1_buffer : Arc<StorageImage<Format>>,
+    
+    pub hdr_light_buffer : Arc<StorageImage<Format>>,
+
+    pub luminance_buffer : Arc<StorageImage<Format>>,
+
+    pub light_reprojected_buffer : Arc<StorageImage<Format>>,
+    pub position_reprojected_buffer : Arc<StorageImage<Format>>,
+    pub atomic_buffer : Arc<StorageImage<Format>>,
+    pub reprojection_count_a_buffer : Arc<StorageImage<Format>>,
+    pub reprojection_count_b_buffer : Arc<StorageImage<Format>>,
+    
+    pub iteration_count_buffer : Arc<StorageImage<Format>>,
 
     pub pre_trace_width : u32,
     pub pre_trace_height : u32,
@@ -78,6 +90,18 @@ impl GBuffer {
         let light0_buffer          = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
         let light1_buffer          = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
 
+        let hdr_light_buffer       = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        
+        let luminance_buffer       = StorageImage::new(device.clone(), Dimensions::Dim2d{width : 32, height : 32}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        
+        let light_reprojected_buffer          = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let position_reprojected_buffer       = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+
+        let atomic_buffer          = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
+        let reprojection_count_a_buffer          = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
+        let reprojection_count_b_buffer          = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
+        
+        let iteration_count_buffer          = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Uint, [queue_family].iter().cloned()).unwrap();
 
         GBuffer {
             temp_buffers,
@@ -100,6 +124,14 @@ impl GBuffer {
             ldir1_buffer,
             light0_buffer,
             light1_buffer,
+            hdr_light_buffer,
+            luminance_buffer,
+            light_reprojected_buffer,
+            position_reprojected_buffer,
+            atomic_buffer,
+            reprojection_count_a_buffer,
+            reprojection_count_b_buffer,
+            iteration_count_buffer,
             pre_trace_width,
             pre_trace_height,
         }
