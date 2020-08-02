@@ -310,12 +310,8 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
     dmask |= ds.y < 0 ? AXIS_Y_MASK : 0;
     dmask |= ds.z < 0 ? AXIS_Z_MASK : 0;
 
-    float min_size = 0.00001;
-
     vec3 id = 1.0 / d;
     vec3 od = - o * id;
-
-    max_dist *= MAX_SCALE;
 
     vec2 t = vec2(0, max_dist);
 
@@ -358,7 +354,7 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
     vec2 tc, tv;
 
     // very hot loop
-    while (iterations < 1024) {
+    while (iterations < 2048) {
         iterations += 1;
 
         uint new_incidence;
@@ -489,6 +485,7 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
     }
 
 
+    dist = t.x;
     return_state = VOXEL_MARCH_LOOP_END;
     return false;
 }

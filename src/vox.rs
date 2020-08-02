@@ -1052,129 +1052,32 @@ fn cartesian_to_barycentric(tri : &Triangle, mut p : Vec3) -> Vec3 {
     p
 }
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use image;
-fn read_tga<P : AsRef<Path>>(path : P) -> image::DynamicImage {
-    let bytes = std::fs::read(path).unwrap();
-
-    
-    let byte_stream = std::io::Cursor::new(&bytes);
-
-    let mut reader = image::io::Reader::new(byte_stream);
-
-    reader.set_format(image::ImageFormat::Tga);
-
-    let image = reader.decode().unwrap();
-
-    image    
-}
-
-
-// ###############################################################################################################################################
-// ###############################################################################################################################################
-// ###############################################################################################################################################
-// Tests
-// ###############################################################################################################################################
-// ###############################################################################################################################################
-// ###############################################################################################################################################
-
-
-#[test]
-fn test_voxel_dag_obj_shell_teapot() {
-    use obj::*;
-    use std::path::Path;
-    use std::fs;
-
-    let obj_data = Obj::load(&Path::new("./data/obj/teapot.obj")).expect("Failed to load obj file");
-
-
-    let mut triangles = vec![];
-
-    for o in 0..(obj_data.data.objects.len()) {
-        let object = &obj_data.data.objects[o];
-        for g in 0..(object.groups.len()) {
-            let group = &object.groups[g];
-            for p in 0..(group.polys.len()) {
-                let poly = &group.polys[p];
-                for v in 2..(poly.0.len()) {
-                    let v0 = obj_data.data.position[poly.0[0].0];
-                    let v1 = obj_data.data.position[poly.0[v-1].0];
-                    let v2 = obj_data.data.position[poly.0[v].0];
-
-
-                    let v0 = Vec3::new(v0[0], v0[1], v0[2]);
-                    let v1 = Vec3::new(v1[0], v1[1], v1[2]);
-                    let v2 = Vec3::new(v2[0], v2[1], v2[2]);
-                    
-                    triangles.push(Triangle{
-                        points : [v0, v1, v2],
-                        normal : (v0 - v1).cross(v1 - v2),
-                        mat    : 1,
-                    });
-                }
-            }
-        }
-    }
-
-    let mut min = Vec3::new(f32::MAX, f32::MAX, f32::MAX);
-    let mut max = Vec3::new(f32::MIN, f32::MIN, f32::MIN);
-
-    for [x,y,z] in obj_data.data.position {
-        if x < min.x {min.x = x;}
-        if y < min.y {min.y = y;}
-        if z < min.z {min.z = z;}
-        if x > max.x {max.x = x;}
-        if y > max.y {max.y = y;}
-        if z > max.z {max.z = z;}
-    }
-
-    let size = max - min;
-    let mut max_size = size.x;
-    if size.y > max_size {max_size = size.y;}
-    if size.z > max_size {max_size = size.z;}
-
-    println!("Triangles: {}", triangles.len());
-
-    use std::time::*;
-
-    let start = Instant::now();
-    let mut vchunk = VoxelChunk::from_mesh(9, &triangles, min, max_size);
-    let elapsed = start.elapsed();
-
-    println!("Time to voxelize: {:?}", elapsed);
-    println!("DAG nodes: {}", vchunk.len());
-
-    let serialized = bincode::serialize(&vchunk).unwrap();
-
-    fs::write("./data/dag/teapot.svdag", serialized).unwrap();
-
-}
-
-#[test]
-fn test_voxel_dag_obj_shell_sponza() {
+fn convert_obj_file_with_materials(obj_file : PathBuf, svdag_file : PathBuf, mat_file : PathBuf, depth : usize){
     use obj::Obj;
     use std::path::Path;
     use std::fs;
 
-    let mut obj_data = Obj::load(&Path::new("./data/obj/Sponza/sponza.obj")).expect("Failed to load obj file");
+    let mut obj_data = Obj::load(&obj_file).expect("Failed to load obj file");
 
 
     let mut triangles = vec![];
 
     let mut materials = HashMap::new();
 
-    const DEPTH : usize = 12;
-
     use std::path::PathBuf;
-    let obj_root = PathBuf::from("./data/obj/Sponza/");
+    let mut obj_root = obj_file.clone();
+    obj_root.set_file_name("");
     let mut material_list = vec![Material::default(); materials.len()];
 
     for mtl in obj_data.data.material_libs.iter_mut() {
         use std::io::Read;
         use std::fs::File;
 
-        mtl.reload(File::open(&obj_root.join(mtl.filename.clone())).unwrap()).unwrap();
+        println!("Reloading: {:?}", mtl.filename);
+
+        mtl.reload(File::open(&obj_root.join(&mtl.filename)).unwrap()).unwrap();
 
         for mat in &mtl.materials {
             let kd = if let Some(kd_tex_file) = &mat.map_kd {
@@ -1218,13 +1121,13 @@ fn test_voxel_dag_obj_shell_sponza() {
             kdd[0] *= kd[0];
             kdd[1] *= kd[1];
             kdd[2] *= kd[2];
-        
-            material_list[id] = Material {
+
+            material_list.push(Material {
                 albedo : kdd,
                 metalness : mat.km.unwrap_or(0.0),
                 emission : mat.ke.unwrap_or([0.0; 3]),
                 roughness : 0.3,
-            };
+            });
         }
     }
 
@@ -1293,7 +1196,7 @@ fn test_voxel_dag_obj_shell_sponza() {
     use std::time::*;
     
     let start = Instant::now();
-    let vchunk = VoxelChunk::from_mesh(DEPTH, &triangles, min, max_size);
+    let vchunk = VoxelChunk::from_mesh(depth, &triangles, min, max_size);
     let elapsed = start.elapsed();
     
     println!("Time to voxelize: {:?}", elapsed);
@@ -1302,24 +1205,20 @@ fn test_voxel_dag_obj_shell_sponza() {
     let serialized = bincode::serialize(&vchunk).unwrap();
     let serialized_mats = bincode::serialize(&material_list).unwrap();
 
-    fs::write(format!("./data/dag/sponza_mats.svdag"), serialized).unwrap();
-    fs::write("./data/dag/sponza_mats.mats", serialized_mats).unwrap();
+    fs::write(svdag_file, serialized).unwrap();
+    fs::write(mat_file, serialized_mats).unwrap();
 }
 
-
-#[test]
-fn test_voxel_dag_obj_shell_hairball() {
+fn convert_obj_file(obj_file : PathBuf, svdag_file : PathBuf, depth : usize){
     use obj::Obj;
     use std::path::Path;
     use std::fs;
 
-    let obj_data = Obj::load(&Path::new("./data/obj/hairball.obj")).expect("Failed to load obj file");
+    let mut obj_data = Obj::load(&obj_file).expect("Failed to load obj file");
 
     let mut triangles = vec![];
 
-    // let mut materials = HashMap::new();
-
-    const DEPTH : usize = 10;
+    use std::path::PathBuf;
 
     println!("Processing Triangles...");
 
@@ -1327,14 +1226,6 @@ fn test_voxel_dag_obj_shell_hairball() {
         let object = &obj_data.data.objects[o];
         for g in 0..(object.groups.len()) {
             let group = &object.groups[g];
-
-            // let next = materials.len();
-
-            // let id = if let Some(obj::ObjMaterial::Ref(s)) = &group.material {
-            //     *materials.entry(s.clone()).or_insert(next) as u16
-            // } else {
-            //     0
-            // };
 
             for p in 0..(group.polys.len()) {
                 let poly = &group.polys[p];
@@ -1352,7 +1243,6 @@ fn test_voxel_dag_obj_shell_hairball() {
                         points : [v0, v1, v2],
                         normal : (v0 - v1).cross(v1 - v2),
                         mat    : 0,
-                        // mat    : id,
                     });
                 }
             }
@@ -1384,7 +1274,7 @@ fn test_voxel_dag_obj_shell_hairball() {
     use std::time::*;
     
     let start = Instant::now();
-    let vchunk = VoxelChunk::from_mesh(DEPTH, &triangles, min, max_size);
+    let vchunk = VoxelChunk::from_mesh(depth, &triangles, min, max_size);
     let elapsed = start.elapsed();
     
     println!("Time to voxelize: {:?}", elapsed);
@@ -1392,7 +1282,110 @@ fn test_voxel_dag_obj_shell_hairball() {
     
     let serialized = bincode::serialize(&vchunk).unwrap();
 
-    fs::write(format!("./data/dag/hairball.svdag"), serialized).unwrap();
+    fs::write(svdag_file, serialized).unwrap();
+}
+
+use image;
+fn read_tga<P : AsRef<Path>>(path : P) -> image::DynamicImage {
+    let path : &Path = path.as_ref();
+    let bytes = std::fs::read(path).unwrap();
+
+    let byte_stream = std::io::Cursor::new(&bytes);
+
+    let mut reader = image::io::Reader::new(byte_stream);
+
+    // very broken logic to deal with some tga files I had
+    if path.ends_with(".tga") {
+        reader.set_format(image::ImageFormat::Tga);
+    } else {
+        reader = reader.with_guessed_format().unwrap();
+    }
+
+    let image = reader.decode().unwrap();
+
+    image    
+}
+
+
+// ###############################################################################################################################################
+// ###############################################################################################################################################
+// ###############################################################################################################################################
+// Tests
+// ###############################################################################################################################################
+// ###############################################################################################################################################
+// ###############################################################################################################################################
+
+#[test]
+fn test_voxel_dag_obj_shell_buff_doge() {
+    println!("Converting {:?}", "./data/obj/BuffDoge.OBJ");
+
+    convert_obj_file(
+        PathBuf::from("./data/obj/BuffDoge.OBJ"),
+        PathBuf::from("./data/dag/BuffDoge.svdag"),
+        12
+    );
+
+    println!("");
+    println!("Converting {:?}", "./data/obj/BuffDoge.OBJ");
+
+    convert_obj_file(
+        PathBuf::from("./data/obj/MegaBuffDoge.OBJ"),
+        PathBuf::from("./data/dag/MegaBuffDoge.svdag"),
+        12
+    );
+
+    println!("");
+    println!("Converting {:?}", "./data/obj/BuffDoge.OBJ");
+    
+    convert_obj_file(
+        PathBuf::from("./data/obj/Cheem.OBJ"),
+        PathBuf::from("./data/dag/Cheem.svdag"),
+        12
+    );
+}
+
+#[test]
+fn test_voxel_dag_obj_shell_teapot() {
+
+    convert_obj_file(
+        PathBuf::from("./data/obj/teapot.obj"),
+        PathBuf::from("./data/dag/teapot.svdag"),
+        12
+    );
+
+}
+
+#[test]
+fn test_voxel_dag_obj_shell_sponza() {
+
+    convert_obj_file_with_materials(
+        PathBuf::from("./data/obj/Sponza/sponza.obj"),
+        PathBuf::from("./data/dag/sponza_mats.svdag"),
+        PathBuf::from("./data/dag/sponza_mats.mats"),
+        12
+    );
+}
+
+#[test]
+fn test_voxel_dag_obj_shell_sibenik() {
+    convert_obj_file_with_materials(
+        PathBuf::from("./data/obj/sibenik/sibenik.obj"),
+        PathBuf::from("./data/dag/sibenik_mats.svdag"),
+        PathBuf::from("./data/dag/sibenik_mats.mats"),
+        10
+    );
+}
+
+
+#[test]
+fn test_voxel_dag_obj_shell_hairball() {
+    
+    convert_obj_file(
+        PathBuf::from("./data/obj/hairball.obj"),
+        PathBuf::from("./data/dag/hairball.svdag"),
+        9
+    );
+
 }
 
 

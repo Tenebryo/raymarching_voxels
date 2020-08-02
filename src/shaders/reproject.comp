@@ -3,69 +3,44 @@
 
 layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
 
-// color map in
-layout(rgba32f, binding = 0) readonly uniform image2D in_buf;
-// world positions in
-layout(rgba32f, binding = 1) readonly uniform image2D position_in_buf;
-// color map out
-layout(rgba32f, binding = 2) uniform image2D out_buf;
-// world positions out (occlusion depth tests)
-layout(rgba32f, binding = 3) uniform image2D position_out_buf;
+// current position
+layout(rgba32f, binding = 0) readonly uniform image2D current_pos_buf;
+layout(rgba32f, binding = 1) readonly uniform image2D current_rnm_buf;
 
-layout(r32ui, binding = 4) uniform uimage2D atomic_buf;
+// previous frame buffers
+layout(rgba32f, binding = 2) uniform image2D  prev_col_buf;
+layout(rgba32f, binding = 3) uniform image2D  prev_pos_buf;
+layout(r32ui,   binding = 4) uniform uimage2D prev_cnt_buf;
 
-layout(r32ui, binding = 5) readonly uniform uimage2D count_in_buf;
+// reprojected frame buffers
+layout(rgba32f, binding = 5) uniform image2D  reprojected_col_buf;
+layout(rgba32f, binding = 6) uniform image2D  reprojected_pos_buf;
+layout(r32ui,   binding = 7) uniform uimage2D reprojected_cnt_buf;
 
-layout(r32ui, binding = 6) uniform uimage2D count_out_buf;
+layout(rgba32f, binding = 8) uniform image2D reprojection_dist_buf;
 
 layout(push_constant) uniform ReprojectPushConstantData {
-    vec3 origin;
+    // previous camera orientation
+    vec3 p_origin;
+    vec3 p_forward;
+    vec3 p_up;
+
     uint depth_scale;
-    vec3 forward;
-    vec3 up;
+    float reprojection_miss_ratio;
 };
 
-/*
+const ivec2 OFFSETS[9] = {
+    ivec2(-1,-1), ivec2( 0,-1), ivec2( 1,-1),
+    ivec2(-1, 0), ivec2( 0, 0), ivec2( 1, 0),
+    ivec2(-1, 1), ivec2( 0, 1), ivec2( 1, 1),
+};
 
-invert this code snippet from ./intersect.comp to get the pixel from ray direction
-
-    ivec2 size = imageSize(pImage);
-
-    float aspect_ratio = float(size.x) / float(size.y);
-
-    if (idx.x < size.x && idx.y < size.y) {
-        // calculate ray for this pixel by constructing a virtual screen
-        vec3 vx = normalize(cross(camera_forward, camera_up));
-        vec3 vy = normalize(cross(camera_forward, vx));
-
-        // ND coordinates [0,1]x[0,1]
-        vec2 ndc = vec2(idx) / vec2(size);
-
-        // (pseudo) screen space coordinates [-1,1]x[-1,1]
-        vec2 ssc = 2 * (ndc - 0.5);
-
-        // the ray direction for this pixel
-        vec3 ray_dir = normalize(camera_forward + aspect_ratio * ssc.x * vx + ssc.y * vy);
-
-
-*/
-
-vec3 ray_dir(ivec2 idx, float ar, ivec2 size) {
-    
-    // calculate ray for this pixel by constructing a virtual screen
-    vec3 vx = normalize(cross(forward, up));
-    vec3 vy = normalize(cross(forward, vx));
-
-    // ND coordinates [0,1]x[0,1]
-    vec2 ndc = vec2(idx) / vec2(size);
-
-    // (pseudo) screen space coordinates [-1,1]x[-1,1]
-    vec2 ssc = 2 * (ndc - 0.5);
-
-    // the ray direction for this pixel
-    return normalize(forward + ar * ssc.x * vx + ssc.y * vy);
+float dist_sq(vec3 a, vec3 b) {
+    vec3 d = a - b;
+    return dot(d, d);
 }
 
+/// reverse reprojection: uses the sampled position and guesses its position in the previous frame
 void main() {
 
     ivec2 idx = ivec2(
@@ -73,17 +48,17 @@ void main() {
         gl_GlobalInvocationID.y
     );
 
-    ivec2 size = imageSize(out_buf);
+    ivec2 size = imageSize(reprojected_col_buf);
 
     float aspect_ratio = float(size.x) / float(size.y);
 
     if (idx.x < size.x && idx.y < size.y) {
         // calculate the x- and y-axis of the new camera plane
-        vec3 sx = normalize(cross(forward, up));
-        vec3 sy = normalize(cross(forward, sx));
+        vec3 sx = normalize(cross(p_forward, p_up));
+        vec3 sy = normalize(cross(p_forward, sx));
 
         // get the world position
-        vec4 p = imageLoad(position_in_buf, idx);
+        vec4 p = imageLoad(current_pos_buf, idx);
 
         if (p.w < 1e-6) {
             // no information stored at this location, reset count
@@ -93,53 +68,80 @@ void main() {
         vec3 wp = p.xyz;
 
         // vector/ray from new camera origin to world position of intersection
-        vec3 v = wp - origin;
+        vec3 v = wp - p_origin;
+
+        float depth = length(v);
 
         vec3 vn = normalize(v);
 
-        uint idepth = uint(length(v) * depth_scale);
-
-        float d = dot(forward, v);
+        float d = dot(p_forward, v);
 
         // check that the reprojected pixel is in front of the camera
         if (d < 0) {
             return;
         }
 
-        // intersect v into the new camera plane.
-        v *= dot(forward, forward) / d;
+        // intersect v into the previous camera plane.
+        v *= dot(p_forward, p_forward) / d;
 
-        v -= forward;
+        v -= p_forward;
 
-        // determine the new coordinates on the camera plane ([-ar, ar]x[-1, 1])
+        // determine the previous coordinates on the camera plane ([-ar, ar]x[-1, 1])
         vec2 uv = vec2(dot(sx, v), dot(sy, v));
 
-        // determine the new coordinates on the screen area ([0, 1]x[0, 1])
+        // determine the previous coordinates on the screen area ([0, 1]x[0, 1])
         uv = uv * vec2(1.0 / aspect_ratio, 1.0) * 0.5 + 0.5;
 
+        vec2 nscf = size * uv;
+
         // new screen coordinates (floored)
-        ivec2 nsc = ivec2(round(size * uv));
+        ivec2 nsc = ivec2(round(nscf));
 
-        // resolve reprojection conflicts with atomics
-        imageAtomicMin(atomic_buf, nsc, idepth);
 
-        // synchronize work group
-        barrier();
+        // find the nearest reprojection from a 3x3 patch
+        vec4 q = imageLoad(prev_pos_buf, nsc + OFFSETS[0]);
+        uint min_i = 0;
+        float min_d = dist_sq(q.xyz, p.xyz);
+        vec4 min_p = q;
 
-        uint cdepth = imageLoad(atomic_buf, nsc).r;
-        // uint cdepth = imageAtomicMin(atomic_buf, nsc, idepth);
-
-        float diff = distance(vn, ray_dir(nsc, aspect_ratio, size));
-
-        if (cdepth == idepth) {
-            if (diff > 0.005) {
-                // debug information
-                imageStore(out_buf, nsc, vec4(1,0,0,1));
-            } else {
-                imageStore(out_buf, nsc, imageLoad(in_buf, idx));
+        for (uint i = 1; i < 9; i++) {
+            q = imageLoad(prev_pos_buf, nsc + OFFSETS[i]);
+            float d = dist_sq(q.xyz, p.xyz);
+            if (d < min_d) {
+                min_d = d;
+                min_i = i;
+                min_p = min_p;
             }
-            imageStore(position_out_buf, nsc, p);
-            imageStore(count_out_buf, nsc, imageLoad(count_in_buf, idx) + 1);
         }
+
+        // min_i = 4;
+
+        ivec2 nidx = nsc + OFFSETS[min_i];
+
+        // load from previous frame
+        vec4 pos = imageLoad(prev_pos_buf, nidx);
+        vec4 col = imageLoad(prev_col_buf, nidx);
+        uint cnt = imageLoad(prev_cnt_buf, nidx).r;
+
+        
+        if (min_i != 4) {
+            cnt -= 2;
+        }
+        
+        // check to see if the reprojected position is accurate
+        float dist = distance(pos.xyz, p.xyz);
+        if (dist > reprojection_miss_ratio * depth) {
+            // reject the reprojection if there is significant deviation from current frame
+            col = vec4(0, 0, 0, 0);
+            pos = vec4(0, 0, 0, 0);
+            cnt = 0;
+        }
+        // pos.w = min_i;
+        
+        // store in the reprojected image
+        imageStore(reprojected_col_buf, idx, col);
+        imageStore(reprojected_pos_buf, idx, pos);
+        imageStore(reprojected_cnt_buf, idx, uvec4(cnt) + 1);
+        imageStore(reprojection_dist_buf, idx, vec4(reprojection_miss_ratio, dist, depth, min_i));
     }
 }

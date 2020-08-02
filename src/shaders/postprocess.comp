@@ -10,6 +10,7 @@ layout(push_constant) uniform PostprocessPushConstantData {
     float adaptation;
     float dt;
     uint frame_idx;
+    uvec2 center;
 };
 
 
@@ -48,13 +49,19 @@ void main() {
         e = imageLoad(luminance_image, ivec2(31)).r;
     }
 
-    e = exposure * max(0.2, (1 - log(e)) * 2);
+    e = exposure * max(0.02, (1 - log(e)) * 2);
 
     // do postprocessing effects
     vec4 light = imageLoad(light_buf, idx);
 
     // exposure HDR map
     light.rgb = vec3(1.0) - exp(-light.rgb * e);
+
+    // cursor
+    vec2 dc = abs(vec2(idx) - vec2(center));
+    if ((dc.x < 2 && dc.y < 8) || (dc.y < 2 && dc.x < 8)) {
+        light.rgb = 1 - light.rgb;
+    }
 
     imageStore(swapchain_image, idx, light);
 }

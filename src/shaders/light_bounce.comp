@@ -17,6 +17,7 @@ struct PointLight {
 
 struct DirectionalLight {
     vec3 direction;
+    float noise_scale;
     vec3 color;
 };
 
@@ -62,7 +63,7 @@ layout(rgba32f,  binding = 7)  uniform image2D normal1_buf;
 layout(r32f,     binding = 8)  readonly uniform image2D depth_buf;
 layout(r32ui,    binding = 9)  readonly uniform uimage2D material0_buf;
 layout(r32ui,    binding = 10) uniform uimage2D material1_buf;
-layout(rgba32ui, binding = 11) readonly uniform uimage2D rng_seed_buf;
+layout(rgba32f,  binding = 11) readonly uniform image2D rng_seed_buf;
 layout(rgba32ui, binding = 12) uniform uimage2D light_index_buf;
 layout(rgba32f,  binding = 13) uniform image2D ldir0_buf;
 layout(rgba32f,  binding = 14) uniform image2D ldir1_buf;
@@ -168,6 +169,12 @@ vec2 sample_hemisphere(float r0, float r1) {
     return vec2(PI * r1 * 0.5, 2 * PI * r0);
 }
 
+vec2 sample_sphere(float r0, float r1) {
+    // return vec2(acos(r1), 2 * PI * r0);
+    return vec2(PI * r1, 2 * PI * r0);
+}
+
+
 const vec3 INCIDENCE_NORMAL_VECTORS[3] = {vec3(1,0,0), vec3(0,1,0), vec3(0,0,1)};
 
 /// do multiple importance path tracing with 
@@ -192,14 +199,24 @@ void main() {
         vec4  n = imageLoad(normal0_buf, idx);
         vec4  d = imageLoad(depth_buf, idx);
         uvec4 m = imageLoad(material0_buf, idx);
-        uvec4 s = imageLoad(rng_seed_buf, idx);
+        vec4  s = imageLoad(rng_seed_buf, idx);
 
         vec3 out_0 = normalize(camera_origin - p.xyz);
 
         // generate some pseudo random numbers
-        vec3 rv0 = halton_sequence3(s.x, uvec3(2,3,5));
-        vec3 rv1 = halton_sequence3(s.y, uvec3(2,3,5));
-        vec3 rv2 = halton_sequence3(s.z, uvec3(2,3,5));
+        vec2 rv0 = s.xy;
+        vec3 rv1 = s.zyw;
+        vec3 rv2 = s.xzy;
+
+        vec2 rsp1_2d = sample_hemisphere(rv1.x + 1e-6, 0.99 * rv1.y);
+        vec2 rsp2_2d = sample_hemisphere(rv2.x + 1e-6, 0.99 * rv2.y);
+
+        vec3 rsp1_3d = vector_from_incident_angles(vec3(0,1,0), vec3(1,0,0), rsp1_2d.x, rsp1_2d.y);
+        vec3 rsp2_3d = vector_from_incident_angles(vec3(0,1,0), vec3(1,0,0), rsp2_2d.x, rsp2_2d.y);
+
+        // vec3 rv0 = halton_sequence3(s.x, uvec3(2,3,5));
+        // vec3 rv1 = halton_sequence3(s.y, uvec3(2,3,5));
+        // vec3 rv2 = halton_sequence3(s.z, uvec3(2,3,5));
 
         uint li = 0, vmat_1 = 0;
         vec3 ldir0 = vec3(0), ldir1 = vec3(0);
@@ -212,11 +229,15 @@ void main() {
 
             // vec2 o_angles_0 = incident_angles_from_vector(n.xyz, n.zxy, out_0);
             // vec2 i_angles_0 = sample_brdf(materials[m.x].brdf, o_angles_0.x, o_angles_0.y, rv0.x, rv0.y, rv0.z);
-            vec2 i_angles_0 = sample_hemisphere(rv0.x, rv0.y);
+            // slight offsets to avoid 0s
+            vec2 i_angles_0 = sample_hemisphere(rv0.x + 1e-6, 0.99 * rv0.y);
             vec3 h_0 = vector_from_incident_angles(n.xyz, n.zxy, i_angles_0.x, i_angles_0.y);
 
+            vec3 reflect_dir = reflect(out_0, n.xyz);
+
             // h_0 = n.xyz;
-            // h_0 = normalize(8 * n.xyz + h_0);
+            // h_0 = normalize(reflect_dir * 0.8 + h_0);
+            h_0 = normalize(0.1 * n.xyz + h_0);
 
             // vec3 in_0 = calculate_incident_from_half_angle(out_0, h_0);
             // vec3 in_0 = out_0;
@@ -240,10 +261,10 @@ void main() {
             imageStore(iteration_buf, idx, uvec4(itervec));
 
             if (hit) {
-                p1.w = 1.0;
                 norm1.w = 1.0;
                 light0.w = 1.0;
                 light1.w = 1.0;
+                p1.w = 1.0;
                 p1.xyz = p0 + in_0 * (dist + init_dist);
                 norm1.xyz = INCIDENCE_NORMAL_VECTORS[incidence] * sign(-in_0);
             }
@@ -253,7 +274,7 @@ void main() {
             // * cast rays from path intersection points to the chosen light point
             // * calculate light contributions
 
-            li = s.y % (n_directional_lights + n_point_lights + n_spot_lights);
+            li = uint(abs(s.w) * (n_directional_lights + n_point_lights + n_spot_lights));
             uint l_type = 0;
 
             if (li >= n_directional_lights) {
@@ -273,8 +294,10 @@ void main() {
                 ldir0 = -directional_lights[li].direction;
                 ldir1 = ldir0;
 
-                ldir0 += rv1 * 0.2;
-                ldir1 += rv2 * 0.2;
+                float ns = directional_lights[li].noise_scale;
+
+                ldir0 += (rv1 - 0.5) * ns;
+                ldir1 += (rv2 - 0.5) * ns;
 
                 ldir0 = normalize(ldir0);
                 ldir1 = normalize(ldir1);
@@ -286,8 +309,12 @@ void main() {
                 light1 = light0;
             } else if (l_type == 1) {
                 // point light. for now assume perfect point lights
-                ldir0 = point_lights[li].position - p0;
-                ldir1 = point_lights[li].position - p1.xyz;
+
+                vec3 lpos = point_lights[li].position;
+                float r = point_lights[li].radius;
+
+                ldir0 = lpos + rsp1_3d * r - p0;
+                ldir1 = lpos + rsp2_3d * r - p1.xyz;
                 
                 ldist0 = length(ldir0);
                 ldist1 = length(ldir1);
@@ -295,8 +322,11 @@ void main() {
                 ldir0 = normalize(ldir0);
                 ldir1 = normalize(ldir1);
                 
-                light0.xyz = point_lights[li].color * point_lights[li].power / (ldist0 * ldist0);
-                light1.xyz = point_lights[li].color * point_lights[li].power / (ldist1 * ldist1);
+                vec3 lcol = point_lights[li].color;
+                float lpow = point_lights[li].power;
+
+                light0.xyz = lcol * lpow / (ldist0 * ldist0);
+                light1.xyz = lcol * lpow / (ldist1 * ldist1);
             } else if (l_type == 2) {
                 // spot light. for now assume perfect point lights
                 ldir0 = spots_lights[li].position - p0;
@@ -318,7 +348,7 @@ void main() {
                 light1 = vec4(0);
                 ldir1 = vec3(0);
                 p1 = vec4(in_0 * render_dist, 0);
-                norm1 = vec4(0);
+                norm1 = vec4(dist, 1.0 / 0.0, max(1.0 / 0.0, 0.0), 100 + code);
                 vmat_1 = 0;
             }
         }

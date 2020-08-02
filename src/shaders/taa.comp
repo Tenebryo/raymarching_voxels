@@ -1,0 +1,34 @@
+#version 450
+
+
+layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
+
+layout(rgba32f, binding = 0) readonly  uniform image2D current_frame;
+layout(rgba32f, binding = 1) uniform image2D accumulator;
+layout(rgba32f, binding = 2) readonly  uniform image2D alpha;
+layout(r32ui,   binding = 3) readonly uniform uimage2D samples;
+layout(rgba32f, binding = 4) writeonly uniform image2D output_frame;
+
+/// Sample one pixel from each of the 
+void main() {
+
+    ivec2 idx = ivec2(
+        gl_GlobalInvocationID.x,
+        gl_GlobalInvocationID.y
+    );
+
+    ivec2 size = imageSize(output_frame);
+
+    if (idx.x < size.x && idx.y < size.y) {
+
+        uint n = max(1, imageLoad(samples, idx).r);
+        vec4 x = imageLoad(current_frame, idx);
+        vec4 acc = imageLoad(current_frame, idx);
+
+        // accumulater w channel stores whether the accumulator has valid information or not
+        vec4 ouput = vec4(mix(x.rgb, acc.rgb, acc.w * (1.0 - 1.0 / n)), 1.0);
+
+        imageStore(output_frame, idx, ouput);
+        imageStore(accumulator, idx, ouput);
+    }
+}

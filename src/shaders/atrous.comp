@@ -1,0 +1,96 @@
+#version 450
+
+layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
+
+layout(rgba32f, binding = 0) readonly uniform image2D col_in_buf;
+layout(rgba32f, binding = 1) readonly uniform image2D pos_in_buf;
+layout(rgba32f, binding = 2) readonly uniform image2D nrm_in_buf;
+layout(r32ui,   binding = 3) readonly uniform uimage2D cnt_in_buf;
+layout(rgba32f, binding = 4) uniform image2D col_out_buf;
+
+layout(push_constant) uniform AtrousPushConstantData {
+    int stride;
+    float col_weight;
+    float nrm_weight;
+    float pos_weight;
+};
+
+const uint SIZE = 9;
+
+// sigma = 1
+const float KERNEL[SIZE] = {
+    0.0556197, 0.124599, 0.0556197,
+    0.124599, 0.279126, 0.124599,
+    0.0556197, 0.124599, 0.0556197
+};
+
+// sigma = 2
+// const float KERNEL[SIZE] = {
+//     0.100268, 0.116115, 0.100268, 
+//     0.116115, 0.134467, 0.116115, 
+//     0.100268, 0.116115, 0.100268
+// };
+
+const ivec2 OFFSET[SIZE] = {
+    ivec2(-1, -1), ivec2( 0, -1), ivec2( 1, -1),
+    ivec2(-1,  0), ivec2( 0,  0), ivec2( 1,  0),
+    ivec2(-1,  1), ivec2( 0,  1), ivec2( 1,  1)
+};
+
+/// implement the edge-aware A-Trous Wavelet filtering based on
+/// https://jo.dreggn.org/home/2010_atrous.pdf
+void main() {
+    ivec2 idx = ivec2(
+        gl_GlobalInvocationID.x,
+        gl_GlobalInvocationID.y
+    );
+
+    ivec2 size = imageSize(col_out_buf);
+
+    if (idx.x < size.x && idx.y < size.y) {
+        vec4 cval = imageLoad(col_in_buf, idx);
+        vec4 nval = imageLoad(nrm_in_buf, idx);
+        vec4 pval = imageLoad(pos_in_buf, idx);
+
+        if (pval.w < 0.5) {
+            imageStore(col_out_buf, idx, cval);
+            return;
+        }
+
+        vec4 sum = vec4(0.0);
+        float total_w = 0.0;
+        for(int i = 0; i < SIZE; i++) {
+            ivec2 ki = idx + stride * OFFSET[i];
+
+            // compute weight from color difference
+            vec4 ctmp = imageLoad(col_in_buf, ki);
+            vec4 col_diff = cval - ctmp;
+            float col_dist = dot(col_diff, col_diff);
+            float col_w = min(exp(-(col_dist)/col_weight), 1.0);
+
+            // compute weight from normal difference
+            vec4 ntmp = imageLoad(nrm_in_buf, ki);
+            vec4 nrm_diff = nval - ntmp;
+            float nrm_dist = max(dot(nrm_diff, nrm_diff)/(stride*stride),0.0);
+            float nrm_w = min(exp(-(nrm_dist)/nrm_weight), 1.0);
+
+            // compute weight from position difference
+            vec4 ptmp = imageLoad(pos_in_buf, ki);
+            vec4 pos_diff = pval - ptmp;
+            float pos_dist = dot(pos_diff, pos_diff);
+            float pos_w = min(exp(-(pos_dist)/pos_weight),1.0);
+
+            // weight the pixel by how many samples it represents
+            uint count = imageLoad(cnt_in_buf, ki).x;
+
+            float weight = col_w * nrm_w * pos_w;// * log(count+1);
+
+            sum += ctmp * weight * KERNEL[i];
+            total_w += weight * KERNEL[i];
+        }
+
+        if (total_w > 1e-6) {
+            imageStore(col_out_buf, idx, sum / total_w);
+        }
+    }
+}

@@ -1,0 +1,32 @@
+#version 450
+
+
+layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
+
+layout(rg8ui, binding = 0) readonly uniform uimage2D stratum_pix_buf;
+layout(rgba32f, binding = 1) readonly  uniform image2D in_buf;
+layout(rgba32f, binding = 2) writeonly uniform image2D out_buf;
+
+layout(push_constant) uniform StratifiedSamplePushConstantData {
+    uint patch_size;
+};
+
+/// Sample one pixel from each of the 
+void main() {
+
+    ivec2 idx = ivec2(
+        gl_GlobalInvocationID.x,
+        gl_GlobalInvocationID.y
+    );
+
+    ivec2 size = imageSize(out_buf);
+
+    if (idx.x < size.x && idx.y < size.y) {
+
+        ivec2 stratum_start = idx * int(patch_size);
+        
+        ivec2 pixel_idx = stratum_start + ivec2(imageLoad(stratum_pix_buf, idx).xy);
+
+        imageStore(out_buf, idx, imageLoad(in_buf, pixel_idx) );
+    }
+}

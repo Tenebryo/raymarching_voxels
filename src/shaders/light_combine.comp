@@ -43,7 +43,7 @@ layout(binding = 0) readonly buffer MaterialData {
 };
 
 // g-buffer information
-layout(rgba32f,  binding = 1)  readonly uniform image2D position0_buf;
+layout(rgba32f,  binding = 1)  uniform image2D position0_buf;
 layout(rgba32f,  binding = 2)  uniform image2D position1_buf;
 layout(rgba32f,  binding = 3)  readonly uniform image2D normal0_buf;
 layout(rgba32f,  binding = 4)  uniform image2D normal1_buf;
@@ -189,7 +189,6 @@ void main() {
         uint m0 = imageLoad(material0_buf, idx).x;
         uint m1 = imageLoad(material1_buf, idx).x;
 
-
         vec3 light = vec3(0);
 
         if (p0.w > 0.5) {
@@ -215,8 +214,9 @@ void main() {
             float brdf_weight_0 = max(0, dot(n0.xyz, h0)); // PLACEHOLDER for brdf(out=r0,in=ldir0)
             light += (materials[m0].albedo) * l0 * (brdf_weight_0 * rdd0);
 
+            vec3 light_bounce = vec3(0);
+            
             if (p1.w > 0.5) {
-                vec3 light_bounce = vec3(0);
 
                 vec3 r1 = p0.xyz - p1.xyz;
 
@@ -247,8 +247,8 @@ void main() {
 
                 // light = vec3(rdd1);
 
-                light += light_bounce * materials[m0].albedo;
             } else {
+                // if p1
                 vec3 d = normalize(p1.xyz);
 
                 float theta = atan(d.z, d.x);
@@ -256,8 +256,10 @@ void main() {
 
                 const float R_PI = 1.0 / (PI);
 
-                light = texture(skybox_tex, vec2(theta * R_PI * 0.5, phi * R_PI + 0.5)).rgb;
+                light_bounce = texture(skybox_tex, vec2(theta * R_PI * 0.5, phi * R_PI + 0.5)).rgb;
             }
+            
+            light += light_bounce * materials[m0].albedo;
         } else {
             // skybox
             vec3 d = normalize(p0.xyz);
@@ -275,28 +277,26 @@ void main() {
         vec4 prev_light = imageLoad(light_prev_buf, idx);
 
         vec4 prev_pos = imageLoad(position_prev_buf, idx);
+        
         uint count = imageLoad(count_in_buf, idx).x;
         count = max(1, count);
 
-        float prev_depth = length(camera_origin - prev_pos.xyz);
-        float depth = length(camera_origin - p0.xyz);
-
         float w = 1.0;
-        if (prev_depth > depth + 0.001) {
-            w = 0.0;
-            // if the reprojection failed, then reset the count
-            count = 1;
-        }
+
+        // if (projection_dist > 0.001 || isnan(projection_dist)) {
+        //     // if the reprojection failed, then reset the count
+        //     w = 0.0;
+        //     count = 1;
+        // }
+
         imageStore(count_out_buf, idx, uvec4(count));
 
-        vec4 light_val = vec4(mix(light, prev_light.xyz, prev_light.w * w * (1.0 - 1.0 / count)), 1.0);
-        // vec4 light_val = vec4(mix(light, prev_light.xyz, prev_light.w * (1 - 1.0 / frame_idx)), 1.0);
-
-        // vec4 light_val = vec4(light, 1.0);
-        // light_val = vec4(l0.xyz, 1.0);
-
+        // vec4 light_val = vec4(mix(light, prev_light.xyz, prev_light.w * w * 0.5), 1.0);
+        vec4 light_val = vec4(mix(light, prev_light.rgb, prev_light.w * w * (1.0 - 1.0 / count)), 1.0);
+        vec4 position_val = vec4(mix(p0.xyz, prev_pos.xyz, prev_pos.w * w * (1.0 - 1.0 / count)), 1.0);
+        
+        // store average position and color of each sample
         imageStore(light_buf, idx, light_val);
-        // imageStore(light_prev_buf, idx, light_val);
-
+        imageStore(position0_buf, idx, position_val);
     }
 }

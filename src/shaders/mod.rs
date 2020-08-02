@@ -74,10 +74,26 @@ pub mod normal_blend_cs {
     }
 }
 
+pub mod atrous_cs {
+    vulkano_shaders::shader!{
+        ty: "compute",
+        path: "src/shaders/atrous.comp",
+        include: [],
+    }
+}
+
 pub mod postprocess_cs {
     vulkano_shaders::shader!{
         ty: "compute",
         path: "src/shaders/postprocess.comp",
+        include: [],
+    }
+}
+
+pub mod stratified_sample_cs {
+    vulkano_shaders::shader!{
+        ty: "compute",
+        path: "src/shaders/stratified_sample.comp",
         include: [],
     }
 }
@@ -92,7 +108,9 @@ pub use light_bounce_cs::ty::LightBouncePushConstantData;
 pub use light_occlude_cs::ty::LightOccludePushConstantData;
 pub use light_combine_cs::ty::LightCombinePushConstantData;
 pub use normal_blend_cs::ty::NormalBlendPushConstantData;
+pub use atrous_cs::ty::AtrousPushConstantData;
 pub use postprocess_cs::ty::PostprocessPushConstantData;
+pub use stratified_sample_cs::ty::StratifiedSamplePushConstantData;
 
 // Graphics Primitive Types
 // pub use light_bounce_cs::ty::BRDF;
@@ -100,12 +118,3 @@ pub use light_bounce_cs::ty::PointLight;
 pub use light_bounce_cs::ty::DirectionalLight;
 pub use light_bounce_cs::ty::SpotLight;
 pub use light_bounce_cs::ty::Material;
-
-
-use vulkano::command_buffer::AutoCommandBufferBuilder;
-use vulkano::buffer::CpuAccessibleBuffer;
-use vulkano::device::Device;
-use vulkano::pipeline::ComputePipeline;
-use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
-use vulkano::descriptor::pipeline_layout::PipelineLayoutAbstract;
-use std::sync::Arc;
