@@ -124,8 +124,7 @@ impl GBuffer {
         
         let iteration_count_buffer      = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Uint, [queue_family].iter().cloned()).unwrap();
 
-        let prev_swapchain              = StorageImage::new(device.clone(), Dimensions::Dim3d{width, height, depth: 32}, Format::R8G8B8A8Unorm, [queue_family].iter().cloned()).unwrap();
-
+        let prev_swapchain              = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
 
         let output_buffer               = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
 

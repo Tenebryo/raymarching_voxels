@@ -9,21 +9,21 @@ use vulkano::descriptor::pipeline_layout::PipelineLayoutAbstract;
 use std::sync::Arc;
 
 pub struct DescriptorSets {
-    reproject_set         : Arc<dyn DescriptorSet>,
-    stratified_sample_set : Arc<dyn DescriptorSet>,
-    intersect_set         : Arc<dyn DescriptorSet>,
-    pre_trace_set         : Arc<dyn DescriptorSet>,
-    light_bounce_set      : Arc<dyn DescriptorSet>,
-    light_combine_set     : Arc<dyn DescriptorSet>,
-    postprocess_set       : Arc<dyn DescriptorSet>,
-    atrous_set_a          : Arc<dyn DescriptorSet>,
-    atrous_set_b          : Arc<dyn DescriptorSet>,
-    light_occlude_set_0   : Arc<dyn DescriptorSet>,
-    light_occlude_set_1   : Arc<dyn DescriptorSet>,
+    pub reproject_set         : Arc<dyn DescriptorSet + Send + Sync>,
+    pub stratified_sample_set : Arc<dyn DescriptorSet + Send + Sync>,
+    pub intersect_set         : Arc<dyn DescriptorSet + Send + Sync>,
+    pub pre_trace_set         : Arc<dyn DescriptorSet + Send + Sync>,
+    pub light_bounce_set      : Arc<dyn DescriptorSet + Send + Sync>,
+    pub light_combine_set     : Arc<dyn DescriptorSet + Send + Sync>,
+    pub postprocess_set       : Arc<dyn DescriptorSet + Send + Sync>,
+    pub atrous_set_a          : Arc<dyn DescriptorSet + Send + Sync>,
+    pub atrous_set_b          : Arc<dyn DescriptorSet + Send + Sync>,
+    pub light_occlude_set_0   : Arc<dyn DescriptorSet + Send + Sync>,
+    pub light_occlude_set_1   : Arc<dyn DescriptorSet + Send + Sync>,
 }
 
 impl DescriptorSets {
-    fn new(pipeline : &Pipelines, gbuffer : &GBuffer, dbuffer : &DBuffer) -> DescriptorSets {
+    pub fn new(pipeline : &Pipelines, gbuffer : &GBuffer, dbuffer : &DBuffer) -> DescriptorSets {
 
         let reproject_layout = pipeline.reproject.layout().descriptor_set_layout(0).unwrap();
         let reproject_set = Arc::new(PersistentDescriptorSet::start(reproject_layout.clone())

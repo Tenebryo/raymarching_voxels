@@ -118,7 +118,6 @@ fn main() {
     //*************************************************************************************************************************************
     // Compute Pipeline Creation
     //*************************************************************************************************************************************
-
     
     let (local_size_x, local_size_y) = match physical.extended_properties().subgroup_size() {
         Some(subgroup_size) => {
@@ -365,9 +364,6 @@ fn main() {
     let mut fps = Timing::new(16);
     const FRAME_COUNTS : i32 = 10;
     let mut frame_counts = FRAME_COUNTS;
-    let dimensions: [u32; 2] = surface.window().inner_size().into();
-    let mut surface_width = dimensions[0];
-    let mut surface_height = dimensions[1];
     let p_start = Instant::now();
     let mut adaptation = 2.0;
     let mut exposure = 1.0;
@@ -388,8 +384,8 @@ fn main() {
 
     let mut forward = Vector3::new(1.0, 0.0, 0.0).normalize();
     let up = Vector3::new(0.0, 1.0, 0.0);
-    // let mut position = Vector3::new(0.2, 0.075, 0.3); // sponza
-    let mut position = Vector3::new(0.2, 0.075, 0.2); // sibenik
+    let mut position = Vector3::new(0.2, 0.075, 0.3); // sponza
+    // let mut position = Vector3::new(0.2, 0.075, 0.2); // sibenik
     let mut old_position = position;
     let mut old_forward = forward;
     let mut old_up = up;
@@ -416,13 +412,11 @@ fn main() {
     let mut svdag_geometry_data = {
 
         // let chunk_bytes_sponza = std::fs::read("./data/dag/sponza.svdag").unwrap();
-        // let chunk_bytes_sponza = std::fs::read("./data/dag/sponza_mats.svdag").unwrap();
-        let chunk_bytes_sibenik = std::fs::read("./data/dag/sibenik_mats.svdag").unwrap();
+        let chunk_bytes_sponza = std::fs::read("./data/dag/sponza_mats.svdag").unwrap();
+        // let chunk_bytes_sibenik = std::fs::read("./data/dag/sibenik_mats.svdag").unwrap();
         
-        // let sponza = bincode::deserialize::<vox::VoxelChunk>(&chunk_bytes_sponza).expect("Deserialization Failed");
-        let sibenik = bincode::deserialize::<vox::VoxelChunk>(&chunk_bytes_sibenik).expect("Deserialization Failed");
-
-        sibenik
+        bincode::deserialize::<vox::VoxelChunk>(&chunk_bytes_sponza).expect("Deserialization Failed")
+        // bincode::deserialize::<vox::VoxelChunk>(&chunk_bytes_sibenik).expect("Deserialization Failed")
     };
     
     svdag_geometry_data.calculate_lod_materials();
@@ -444,13 +438,13 @@ fn main() {
         use shaders::PointLight;
 
         let lights = [
-            PointLight {
-                position : [position.x, position.y, position.z],
-                power : 0.01,
-                // power : 0.002,
-                color : [1.0, 1.0, 1.0],
-                radius : 0.005,
-            },
+            // PointLight {
+            //     position : [position.x, position.y, position.z],
+            //     power : 0.01,
+            //     // power : 0.002,
+            //     color : [1.0, 1.0, 1.0],
+            //     radius : 0.005,
+            // },
             PointLight {
                 position : [0.19, 0.125, 0.2],
                 power : 0.002,
@@ -575,7 +569,7 @@ fn main() {
     
     println!("Material Data initialized");
 
-    let _dbuffer = dbuffer::DBuffer {
+    let dbuffer = dbuffer::DBuffer {
         svdag_geometry_buffer    : svdag_geometry_buffer.clone(),
         svdag_material_buffer    : svdag_material_buffer.clone(),
         directional_light_buffer : directional_light_buffer.clone(),
@@ -588,6 +582,8 @@ fn main() {
         skysphere_tex            : skysphere_tex.clone(),
         lin_sampler              : lin_sampler.clone(),
     };
+
+    let mut desc_sets = descriptor_sets::DescriptorSets::new(&pipeline, &gbuffer, &dbuffer);
 
     let luminance_buffer = CpuAccessibleBuffer::<[f32]>::from_iter(device.clone(), BufferUsage::all(), false, [0.0; 4].iter().cloned()).unwrap();
     let mut avg_luminance = 0.0;
@@ -629,14 +625,16 @@ fn main() {
                 // start FPS sample
                 fps.start_sample();
                 
+                let cpu_rendering_start = Instant::now();
+
                 previous_frame_end.as_mut().unwrap().cleanup_finished();
 
                 // recreate the swapchain when the window is resized
                 if recreate_swapchain {
                     // Get the new dimensions of the window.
                     let dimensions: [u32; 2] = surface.window().inner_size().into();
-                    surface_width = dimensions[0];
-                    surface_height = dimensions[1];
+                    width = dimensions[0];
+                    height = dimensions[1];
                     let (new_swapchain, new_images) = match swapchain.recreate_with_dimensions(dimensions) {
                         Ok(r) => r,
                         // This error tends to happen when the user is manually resizing the window.
@@ -648,19 +646,14 @@ fn main() {
                     swapchain = new_swapchain;
                     swapchain_images = new_images;
 
-
-                    width = surface_width;
-                    height = surface_height;
                     // re-allocate buffer images
 
-                    gbuffer = GBuffer::new_buffers(device.clone(), compute_queue.family(), surface_width, surface_height, num_temp_buffers, stratum_size);
-
-                    
+                    gbuffer = GBuffer::new_buffers(device.clone(), compute_queue.family(), width, height, num_temp_buffers, stratum_size);
+                    desc_sets = descriptor_sets::DescriptorSets::new(&pipeline, &gbuffer, &dbuffer);
 
                     recreate_swapchain = false;
                 }
 
-                let cpu_rendering_start = Instant::now();
 
 
                 // get next swapchain image
@@ -707,21 +700,23 @@ fn main() {
                             ui.separator();
                             ui.text(format!("Position:  {:0<5.3?}", position));
                             ui.text(format!("Forward:   {:0<5.3?}", forward));
-                            ui.text(format!("P/Y:       {:0<5.3?}/{:0<5.3?}", 180.0 * pitch / std::f32::consts::PI, 180.0 * yaw / std::f32::consts::PI));
-                            ui.text(format!("DS Build   {:5.3} us", 1e6 * cpu_rendering_time));
+                            ui.text(format!("Pitch/Yaw: {:0<5.3?}/{:0<5.3?}", 180.0 * pitch / std::f32::consts::PI, 180.0 * yaw / std::f32::consts::PI));
+                            ui.text(format!("CPU Time   {:5.3} us", 1e6 * cpu_rendering_time));
                             ui.text(format!("Luminance  {:5.3}", avg_luminance));
+
                             // let mouse_pos = ui.io().mouse_pos;
                             // ui.text(format!(
                             //     "Mouse Position: ({:.1},{:.1})",
                             //     mouse_pos[0], mouse_pos[1]
                             // ));
 
+                            ui.separator();
+
                             Slider::new(im_str!("Exposure"), 0.1..=5.0)
                                 .build(&ui, &mut exposure);
                                 
                             Slider::new(im_str!("Adaptation"), 0.1..=5.0)
                                 .build(&ui, &mut adaptation);
-                                
 
                             Slider::new(im_str!("LoD"), 1..=15)
                                 .build(&ui, &mut intersect_pc.max_depth);
@@ -731,25 +726,27 @@ fn main() {
                                 .build(&ui, &mut reprojection_miss_ratio);
 
                             ui.separator();
-                            ui.text("A-Trous Filter Parameters");
 
-                            ui.checkbox(im_str!("Enabled"), &mut atrous_enable);
-                            
-                            Slider::new(im_str!("c_phi"), 0.00001..=4.0)
-                                .power(2.0)
-                                .build(&ui, &mut atrous_col_weight);
-                            
-                            Slider::new(im_str!("n_phi"), 0.00001..=4.0)
-                                .power(2.0)
-                                .build(&ui, &mut atrous_nrm_weight);
-                            
-                            Slider::new(im_str!("p_phi"), 0.00001..=4.0)
-                                .power(2.0)
-                                .build(&ui, &mut atrous_pos_weight);
+                            if CollapsingHeader::new(im_str!("A-Trous Filter Parameters")).build(&ui) {
 
-                            Slider::new(im_str!("iterations"), 2..=8)
-                                .build(&ui, &mut atrous_iterations);
+                                ui.checkbox(im_str!("Enabled"), &mut atrous_enable);
+                                
+                                Slider::new(im_str!("c_phi"), 0.00001..=4.0)
+                                    .power(2.0)
+                                    .build(&ui, &mut atrous_col_weight);
+                                
+                                Slider::new(im_str!("n_phi"), 0.00001..=4.0)
+                                    .power(2.0)
+                                    .build(&ui, &mut atrous_nrm_weight);
+                                
+                                Slider::new(im_str!("p_phi"), 0.00001..=4.0)
+                                    .power(2.0)
+                                    .build(&ui, &mut atrous_pos_weight);
 
+                                Slider::new(im_str!("iterations"), 2..=8)
+                                    .build(&ui, &mut atrous_iterations);
+
+                            }
                             ui.separator();
 
                             ui.checkbox(im_str!("Render Single Frame"), &mut render_single_frame);
@@ -763,6 +760,8 @@ fn main() {
 
                 let _time = p_start.elapsed().as_secs_f32();
                 
+                // Push Constant Construction @PC
+
                 intersect_pc.camera_forward = [forward.x, forward.y, forward.z];
                 intersect_pc.camera_origin = [position.x, position.y, position.z];
                 intersect_pc.camera_up = [up.x, up.y, up.z];
@@ -773,23 +772,6 @@ fn main() {
                     thread_rng().gen_range(0,intersect_pc.noise_frames),
                     thread_rng().gen_range(0,intersect_pc.noise_frames)
                 ];
-
-                
-                let reproject_layout = pipeline.reproject.layout().descriptor_set_layout(0).unwrap();
-                let reproject_set = Arc::new(PersistentDescriptorSet::start(reproject_layout.clone())
-                    .add_image(gbuffer.position0_buffer.clone()).unwrap()
-                    .add_image(gbuffer.normal0_buffer.clone()).unwrap()
-                    // .add_image(gbuffer.postprocess_input_buffer.clone()).unwrap()
-                    .add_image(gbuffer.hdr_light_buffer.clone()).unwrap()
-                    // .add_image(gbuffer.prev_col_buffer.clone()).unwrap()
-                    .add_image(gbuffer.prev_pos_buffer.clone()).unwrap()
-                    .add_image(gbuffer.prev_cnt_buffer.clone()).unwrap()
-                    .add_image(gbuffer.reprojected_col_buffer.clone()).unwrap()
-                    .add_image(gbuffer.reprojected_pos_buffer.clone()).unwrap()
-                    .add_image(gbuffer.reprojected_cnt_buffer.clone()).unwrap()
-                    .add_image(gbuffer.reprojection_dist_buffer.clone()).unwrap()
-                    .build().unwrap()
-                );
                 
                 let reproject_pc = shaders::ReprojectPushConstantData {
                     p_origin  : [old_position.x, old_position.y, old_position.z],
@@ -801,39 +783,9 @@ fn main() {
                     _dummy1 : [0; 4],
                 };
 
-                let stratified_sample_layout = pipeline.stratified_sample.layout().descriptor_set_layout(0).unwrap();
-                let stratified_sample_set = Arc::new(PersistentDescriptorSet::start(stratified_sample_layout.clone())
-                    .add_image(gbuffer.stratum_index_buffer.clone()).unwrap()
-                    .add_image(gbuffer.position0_buffer.clone()).unwrap()
-                    .add_image(gbuffer.stratum_pos_buffer.clone()).unwrap()
-                    .build().unwrap()
-                );
-
                 let stratified_sample_pc = shaders::StratifiedSamplePushConstantData {
                     patch_size : stratum_size,
                 };
-
-                let intersect_layout = pipeline.intersect.layout().descriptor_set_layout(0).unwrap();
-                let intersect_set = Arc::new(PersistentDescriptorSet::start(intersect_layout.clone())
-                    // initial depth buffer
-                    .add_image(gbuffer.pre_depth_buffer.clone()).unwrap()
-                    // normal buffer
-                    .add_image(gbuffer.normal0_buffer.clone()).unwrap()
-                    // position buffer
-                    .add_image(gbuffer.position0_buffer.clone()).unwrap()
-                    // depth buffer
-                    .add_image(gbuffer.depth_buffer.clone()).unwrap()
-                    // material buffer
-                    .add_image(gbuffer.material0_buffer.clone()).unwrap()
-                    // random seed buffer
-                    .add_image(gbuffer.rng_seed_buffer.clone()).unwrap()
-                    .add_sampled_image(blue_noise_tex.clone(), nst_sampler.clone()).unwrap()
-                    .add_image(gbuffer.iteration_count_buffer.clone()).unwrap()
-                    .add_image(gbuffer.stratum_index_buffer.clone()).unwrap()
-                    .add_buffer(svdag_geometry_buffer.clone()).unwrap()
-                    .add_buffer(svdag_material_buffer.clone()).unwrap()
-                    .build().unwrap()
-                );
 
                 let pre_trace_pc = shaders::PreTracePushConstants {
                     camera_forward : intersect_pc.camera_forward,
@@ -845,93 +797,17 @@ fn main() {
                     _dummy1 : [0;4],
                 };
 
-                let pre_trace_layout = pipeline.pre_trace.layout().descriptor_set_layout(0).unwrap();
-                let pre_trace_set = Arc::new(PersistentDescriptorSet::start(pre_trace_layout.clone())
-                    // depth buffer
-                    .add_image(gbuffer.pre_depth_buffer.clone()).unwrap()
-                    .add_buffer(svdag_geometry_buffer.clone()).unwrap()
-                    .add_buffer(svdag_material_buffer.clone()).unwrap()
-                    .build().unwrap()
-                );
-
-
-                let light_bounce_layout = pipeline.light_bounce.layout().descriptor_set_layout(0).unwrap();
-                let light_bounce_set = Arc::new(PersistentDescriptorSet::start(light_bounce_layout.clone())
-                    .add_buffer(material_buffer.clone()).unwrap()
-                    .add_buffer(point_light_buffer.clone()).unwrap()
-                    .add_buffer(directional_light_buffer.clone()).unwrap()
-                    .add_buffer(spot_light_buffer.clone()).unwrap()
-                    // position buffers
-                    .add_image(gbuffer.position0_buffer.clone()).unwrap()
-                    .add_image(gbuffer.position1_buffer.clone()).unwrap()
-                    // normal buffers
-                    .add_image(gbuffer.normal0_buffer.clone()).unwrap()
-                    .add_image(gbuffer.normal1_buffer.clone()).unwrap()
-                    // depth buffer
-                    .add_image(gbuffer.depth_buffer.clone()).unwrap()
-                    // matrial buffers
-                    .add_image(gbuffer.material0_buffer.clone()).unwrap()
-                    .add_image(gbuffer.material1_buffer.clone()).unwrap()
-                    // random seed buffer
-                    .add_image(gbuffer.rng_seed_buffer.clone()).unwrap()
-                    // light index buffer
-                    .add_image(gbuffer.light_index_buffer.clone()).unwrap()
-                    // light direction buffer
-                    .add_image(gbuffer.ldir0_buffer.clone()).unwrap()
-                    .add_image(gbuffer.ldir1_buffer.clone()).unwrap()
-                    // light value buffer
-                    .add_image(gbuffer.light0_buffer.clone()).unwrap()
-                    .add_image(gbuffer.light1_buffer.clone()).unwrap()
-                    .add_image(gbuffer.iteration_count_buffer.clone()).unwrap()
-                    // voxel data
-                    .add_buffer(svdag_geometry_buffer.clone()).unwrap()
-                    .add_buffer(svdag_material_buffer.clone()).unwrap()
-                    .build().unwrap()
-                );
-
                 let light_bounce_pc = shaders::LightBouncePushConstantData {
                     camera_forward : pre_trace_pc.camera_forward,
                     camera_up : pre_trace_pc.camera_up,
                     camera_origin : pre_trace_pc.camera_origin,
                     n_directional_lights : 0,
-                    n_point_lights : 1,
+                    n_point_lights : 4,
                     n_spot_lights : 0,
                     render_dist : intersect_pc.render_dist,
                     max_depth : intersect_pc.max_depth,
                 };
                 
-                let light_occlude_layout = pipeline.light_occlude.layout().descriptor_set_layout(0).unwrap();
-                let light_occlude_set_0 = Arc::new(PersistentDescriptorSet::start(light_occlude_layout.clone())
-                    // material buffer
-                    .add_buffer(material_buffer.clone()).unwrap()
-                    // position buffers
-                    .add_image(gbuffer.position0_buffer.clone()).unwrap()
-                    // light direction buffer
-                    .add_image(gbuffer.ldir0_buffer.clone()).unwrap()
-                    // light value buffer
-                    .add_image(gbuffer.light0_buffer.clone()).unwrap()
-                    .add_image(gbuffer.iteration_count_buffer.clone()).unwrap()
-                    // voxel data
-                    .add_buffer(svdag_geometry_buffer.clone()).unwrap()
-                    .add_buffer(svdag_material_buffer.clone()).unwrap()
-                    .build().unwrap()
-                );
-                let light_occlude_set_1 = Arc::new(PersistentDescriptorSet::start(light_occlude_layout.clone())
-                    // material buffer
-                    .add_buffer(material_buffer.clone()).unwrap()
-                    // position buffers
-                    .add_image(gbuffer.position1_buffer.clone()).unwrap()
-                    // light direction buffer
-                    .add_image(gbuffer.ldir1_buffer.clone()).unwrap()
-                    // light value buffer
-                    .add_image(gbuffer.light1_buffer.clone()).unwrap()
-                    .add_image(gbuffer.iteration_count_buffer.clone()).unwrap()
-                    // voxel data
-                    .add_buffer(svdag_geometry_buffer.clone()).unwrap()
-                    .add_buffer(svdag_material_buffer.clone()).unwrap()
-                    .build().unwrap()
-                );
-
                 let light_occlude_pc_a = shaders::LightOccludePushConstantData {
                     render_dist : intersect_pc.render_dist,
                     num_materials,
@@ -946,46 +822,6 @@ fn main() {
                     bounce_idx : 1,
                 };
 
-                
-                let light_combine_layout = pipeline.light_combine.layout().descriptor_set_layout(0).unwrap();
-                let light_combine_set = Arc::new(PersistentDescriptorSet::start(light_combine_layout.clone())
-                    .add_buffer(material_buffer.clone()).unwrap()
-                    // position buffers
-                    .add_image(gbuffer.position0_buffer.clone()).unwrap()
-                    .add_image(gbuffer.position1_buffer.clone()).unwrap()
-                    // normal buffers
-                    .add_image(gbuffer.normal0_buffer.clone()).unwrap()
-                    .add_image(gbuffer.normal1_buffer.clone()).unwrap()
-                    // depth buffer
-                    .add_image(gbuffer.depth_buffer.clone()).unwrap()
-                    // material buffers
-                    .add_image(gbuffer.material0_buffer.clone()).unwrap()
-                    .add_image(gbuffer.material1_buffer.clone()).unwrap()
-                    // random seed buffer
-                    .add_image(gbuffer.rng_seed_buffer.clone()).unwrap()
-                    // light index buffer
-                    .add_image(gbuffer.light_index_buffer.clone()).unwrap()
-                    // light direction buffer
-                    .add_image(gbuffer.ldir0_buffer.clone()).unwrap()
-                    .add_image(gbuffer.ldir1_buffer.clone()).unwrap()
-                    // light value buffer
-                    .add_image(gbuffer.light0_buffer.clone()).unwrap()
-                    .add_image(gbuffer.light1_buffer.clone()).unwrap()
-                    // output image
-                    .add_image(gbuffer.hdr_light_buffer.clone()).unwrap()
-                    // .add_image(swapchain_images[image_num].clone()).unwrap()
-                    // temporal integration buffers
-                    .add_image(gbuffer.reprojected_col_buffer.clone()).unwrap()
-                    .add_image(gbuffer.reprojected_pos_buffer.clone()).unwrap()
-                    .add_image(gbuffer.reprojected_cnt_buffer.clone()).unwrap()
-                    .add_image(gbuffer.prev_cnt_buffer.clone()).unwrap()
-                    .add_sampled_image(skysphere_tex.clone(), lin_sampler.clone()).unwrap()
-                    // voxel data
-                    .add_buffer(svdag_geometry_buffer.clone()).unwrap()
-                    .add_buffer(svdag_material_buffer.clone()).unwrap()
-                    .build().unwrap()
-                );
-
                 let light_combine_pc = shaders::LightCombinePushConstantData {
                     ambient_light : [0.00; 3],
                     camera_forward : pre_trace_pc.camera_forward,
@@ -997,24 +833,6 @@ fn main() {
                     _dummy2:[0;4],
                 };
 
-                let atrous_layout = pipeline.atrous.layout().descriptor_set_layout(0).unwrap();
-                
-                let atrous_set_a = Arc::new(PersistentDescriptorSet::start(atrous_layout.clone())
-                    .add_image(gbuffer.postprocess_input_buffer.clone()).unwrap()
-                    .add_image(gbuffer.position0_buffer.clone()).unwrap()
-                    .add_image(gbuffer.normal0_buffer.clone()).unwrap()
-                    .add_image(gbuffer.prev_cnt_buffer.clone()).unwrap()
-                    .add_image(gbuffer.temp_buffers[0].clone()).unwrap()
-                    .build().unwrap()
-                );
-                let atrous_set_b = Arc::new(PersistentDescriptorSet::start(atrous_layout.clone())
-                    .add_image(gbuffer.temp_buffers[0].clone()).unwrap()
-                    .add_image(gbuffer.position0_buffer.clone()).unwrap()
-                    .add_image(gbuffer.normal0_buffer.clone()).unwrap()
-                    .add_image(gbuffer.prev_cnt_buffer.clone()).unwrap()
-                    .add_image(gbuffer.postprocess_input_buffer.clone()).unwrap()
-                    .build().unwrap()
-                );
                 let atrous_pc = shaders::AtrousPushConstantData {
                     stride : 1,
                     col_weight : atrous_col_weight as f32,
@@ -1029,13 +847,6 @@ fn main() {
                     t
                 };
 
-                let postprocess_layout = pipeline.postprocess.layout().descriptor_set_layout(0).unwrap();
-                let postprocess_set = Arc::new(PersistentDescriptorSet::start(postprocess_layout.clone())
-                    .add_image(gbuffer.postprocess_input_buffer.clone()).unwrap()
-                    .add_image(gbuffer.output_buffer.clone()).unwrap()
-                    .add_image(gbuffer.luminance_buffer_t.clone()).unwrap()
-                    .build().unwrap()
-                );
                 let postprocess_pc = shaders::PostprocessPushConstantData {
                     exposure,
                     dt,
@@ -1044,16 +855,16 @@ fn main() {
                     center : [width / 2, height / 2],
                 };
 
-
-                // number of blocks depends on the runtime-computed local_size parameters of the physical device
-                let block_dim_x = (surface_width - 1) / local_size_x + 1;
-                let block_dim_y = (surface_height - 1) / local_size_y + 1;
-
                 // @CMDBUF
                 // we build a command buffer for this frame
                 // needs to be built each frame because we don't know which swapchain image we will be told to render to
                 // its possible a command buffer could be built for each swapchain ahead of time, but that would add complexity
                 // another option is building a command buffer for the render pipeline with fixed inputs and outputs, then blit the output to the swapchain
+                
+                // number of blocks depends on the runtime-computed local_size parameters of the physical device
+                let block_dim_x = (width - 1) / local_size_x + 1;
+                let block_dim_y = (height - 1) / local_size_y + 1;
+
 
                 let mut render_command_buffer_builder = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap();
 
@@ -1069,46 +880,36 @@ fn main() {
                             gbuffer.prev_pos_buffer.clone(), [0,0,0], 0, 0,
                             [width, height, 1], 1
                         ).unwrap()
-                        .dispatch([(gbuffer.pre_trace_width - 1) / local_size_x + 1, (gbuffer.pre_trace_height - 1) / local_size_y + 1, 1], pipeline.pre_trace.clone(), pre_trace_set.clone(), pre_trace_pc).unwrap()
-                        .dispatch([block_dim_x, block_dim_y, 1], pipeline.intersect.clone(), intersect_set.clone(), intersect_pc).unwrap()
-                        .dispatch([block_dim_x, block_dim_y, 1], pipeline.stratified_sample.clone(), stratified_sample_set.clone(), stratified_sample_pc).unwrap()
+                        .dispatch([(gbuffer.pre_trace_width - 1) / local_size_x + 1, (gbuffer.pre_trace_height - 1) / local_size_y + 1, 1], pipeline.pre_trace.clone(), desc_sets.pre_trace_set.clone(), pre_trace_pc).unwrap()
+                        .dispatch([block_dim_x, block_dim_y, 1], pipeline.intersect.clone(), desc_sets.intersect_set.clone(), intersect_pc).unwrap()
+                        .dispatch([block_dim_x, block_dim_y, 1], pipeline.stratified_sample.clone(), desc_sets.stratified_sample_set.clone(), stratified_sample_pc).unwrap()
                         // reproject previous frame
-                        .dispatch([block_dim_x, block_dim_y, 1], pipeline.reproject.clone(), reproject_set.clone(), reproject_pc).unwrap()
+                        .dispatch([block_dim_x, block_dim_y, 1], pipeline.reproject.clone(), desc_sets.reproject_set.clone(), reproject_pc).unwrap()
                         // lighting calculations
-                        .dispatch([block_dim_x, block_dim_y, 1], pipeline.light_bounce.clone(), light_bounce_set.clone(), light_bounce_pc).unwrap()
-                        .dispatch([block_dim_x, block_dim_y, 1], pipeline.light_occlude.clone(), light_occlude_set_0.clone(), light_occlude_pc_a).unwrap()
-                        .dispatch([block_dim_x, block_dim_y, 1], pipeline.light_occlude.clone(), light_occlude_set_1.clone(), light_occlude_pc_b).unwrap()
-                        .dispatch([block_dim_x, block_dim_y, 1], pipeline.light_combine.clone(), light_combine_set.clone(), light_combine_pc).unwrap()
+                        .dispatch([block_dim_x, block_dim_y, 1], pipeline.light_bounce.clone(), desc_sets.light_bounce_set.clone(), light_bounce_pc).unwrap()
+                        .dispatch([block_dim_x, block_dim_y, 1], pipeline.light_occlude.clone(), desc_sets.light_occlude_set_0.clone(), light_occlude_pc_a).unwrap()
+                        .dispatch([block_dim_x, block_dim_y, 1], pipeline.light_occlude.clone(), desc_sets.light_occlude_set_1.clone(), light_occlude_pc_b).unwrap()
+                        .dispatch([block_dim_x, block_dim_y, 1], pipeline.light_combine.clone(), desc_sets.light_combine_set.clone(), light_combine_pc).unwrap()
                         .copy_image(
                             gbuffer.hdr_light_buffer.clone(), [0,0,0], 0, 0,
                             gbuffer.postprocess_input_buffer.clone(), [0,0,0], 0, 0,
                             [width, height, 1], 1
                         ).unwrap();
+                    
                     if atrous_enable {
+                        // apply atrous filtering to the hdr image
                         let mut s = 1;
                         for _ in 0..(atrous_iterations/2) {
                             render_command_buffer_builder
                                 // filtering
-                                .dispatch([block_dim_x, block_dim_y, 1], pipeline.atrous.clone(), atrous_set_a.clone(), shaders::AtrousPushConstantData{stride :   s, ..atrous_pc}).unwrap()
-                                .dispatch([block_dim_x, block_dim_y, 1], pipeline.atrous.clone(), atrous_set_b.clone(), shaders::AtrousPushConstantData{stride : 2*s, ..atrous_pc}).unwrap();
+                                .dispatch([block_dim_x, block_dim_y, 1], pipeline.atrous.clone(), desc_sets.atrous_set_a.clone(), shaders::AtrousPushConstantData{stride :   s, ..atrous_pc}).unwrap()
+                                .dispatch([block_dim_x, block_dim_y, 1], pipeline.atrous.clone(), desc_sets.atrous_set_b.clone(), shaders::AtrousPushConstantData{stride : 2*s, ..atrous_pc}).unwrap();
                             
                             s *= 4;
                         }
                     }
-                    render_command_buffer_builder
-                        // post processing
-                        .dispatch([block_dim_x, block_dim_y, 1], pipeline.postprocess.clone(), postprocess_set.clone(), postprocess_pc).unwrap()
-                        .copy_image(
-                            swapchain_images[image_num].clone(), [0,0,0], 0, 0,
-                            gbuffer.prev_swapchain.clone(), [0,0,0], 0, 0,
-                            [width, height, 1], 1
-                        ).unwrap()
-                        .blit_image(
-                            gbuffer.output_buffer.clone(),       [0,0,0], [width as i32, height as i32, 1], 0, 0, 
-                            swapchain_images[image_num].clone(), [0,0,0], [width as i32, height as i32, 1], 0, 0, 1, Filter::Linear
-                        ).unwrap();
-
-                    // compute average luminance by successively blit-ing down to a single pixel (currently lags by 1 frame)
+                    
+                    // compute average luminance by successively blit-ing down to a single pixel
                     render_command_buffer_builder
                         .blit_image(
                             gbuffer.hdr_light_buffer.clone(), [0,0,0], [width as i32, height as i32, 1], 0, 0, 
@@ -1135,7 +936,23 @@ fn main() {
                             gbuffer.luminance_buffer_t.clone(), [0,0,0], [1,1,1], 0, 0, 1, Filter::Linear
                         ).unwrap();
 
+                    render_command_buffer_builder
+                        // post processing
+                        .dispatch([block_dim_x, block_dim_y, 1], pipeline.postprocess.clone(), desc_sets.postprocess_set.clone(), postprocess_pc).unwrap()
+                        // copy output to a buffer to enable single frame mode
+                        .copy_image(
+                            gbuffer.output_buffer.clone(), [0,0,0], 0, 0,
+                            gbuffer.prev_swapchain.clone(), [0,0,0], 0, 0,
+                            [width, height, 1], 1
+                        ).unwrap()
+                        // blit the output to the swapchain
+                        .blit_image(
+                            gbuffer.output_buffer.clone(),       [0,0,0], [width as i32, height as i32, 1], 0, 0, 
+                            swapchain_images[image_num].clone(), [0,0,0], [width as i32, height as i32, 1], 0, 0, 1, Filter::Linear
+                        ).unwrap();
+
                     if intersect_pc.frame_idx % luminance_frame_period == 0 {
+                        // copy the average frame luminance to a host-accessible buffer every `luminance_frame_period` frames
                         render_command_buffer_builder
                             .copy_image_to_buffer_dimensions(
                                 gbuffer.luminance_buffer_t.clone(),
@@ -1150,27 +967,28 @@ fn main() {
 
                     render_new_frame = !render_single_frame;
                 } else {
+                    // if we are rendering in single frame mode, copy the previous rendered frame
                     render_command_buffer_builder
-                        .copy_image(
-                            gbuffer.prev_swapchain.clone(), [0,0,0], 0, 0,
-                            swapchain_images[image_num].clone(), [0,0,0], 0, 0,
-                            [width, height, 1], 1
+                        .blit_image(
+                            gbuffer.prev_swapchain.clone(),      [0,0,0], [width as i32, height as i32, 1], 0, 0, 
+                            swapchain_images[image_num].clone(), [0,0,0], [width as i32, height as i32, 1], 0, 0, 1, Filter::Linear
                         ).unwrap();
                 }
 
                 let render_command_buffer = render_command_buffer_builder.build().unwrap();
 
+                // build ui command buffer
                 let mut ui_cmd_buf_builder = AutoCommandBufferBuilder::new(device.clone(), compute_queue.family()).unwrap();
                 
                 platform.prepare_render(&ui, &surface.window());
                 let draw_data = ui.render();
                 imgui_renderer.draw_commands(&mut ui_cmd_buf_builder, compute_queue.clone(), swapchain_images[image_num].clone(), draw_data).unwrap();
-
                 
                 let ui_cmd_buf = ui_cmd_buf_builder.build().unwrap();
                 
                 cpu_rendering_time = cpu_rendering_start.elapsed().as_secs_f32();
-                
+
+                // execute the command buffers for voxel and ui rendering
                 let future = previous_frame_end.take().unwrap()
                     .join(acquire_future)
                     // rendering is done in a series of compute shader commands
@@ -1194,6 +1012,7 @@ fn main() {
                         previous_frame_end = Some(Box::new(sync::now(device.clone())) as Box<_>);
                     }
                 }
+
                 // FPS information
                 fps.end_sample();
 
