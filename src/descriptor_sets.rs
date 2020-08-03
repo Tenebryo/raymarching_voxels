@@ -108,6 +108,9 @@ impl DescriptorSets {
             .add_image(gbuffer.light0_buffer.clone()).unwrap()
             .add_image(gbuffer.light1_buffer.clone()).unwrap()
             .add_image(gbuffer.iteration_count_buffer.clone()).unwrap()
+            // count and pixel masking buffers
+            .add_image(gbuffer.reprojected_cnt_buffer.clone()).unwrap()
+            .add_image(gbuffer.sample_mask_buffer.clone()).unwrap()
             // voxel data
             .add_buffer(dbuffer.svdag_geometry_buffer.clone()).unwrap()
             .add_buffer(dbuffer.svdag_material_buffer.clone()).unwrap()
@@ -125,6 +128,8 @@ impl DescriptorSets {
             // light value buffer
             .add_image(gbuffer.light0_buffer.clone()).unwrap()
             .add_image(gbuffer.iteration_count_buffer.clone()).unwrap()
+            // count and pixel masking buffers
+            .add_image(gbuffer.sample_mask_buffer.clone()).unwrap()
             // voxel data
             .add_buffer(dbuffer.svdag_geometry_buffer.clone()).unwrap()
             .add_buffer(dbuffer.svdag_material_buffer.clone()).unwrap()
@@ -140,6 +145,8 @@ impl DescriptorSets {
             // light value buffer
             .add_image(gbuffer.light1_buffer.clone()).unwrap()
             .add_image(gbuffer.iteration_count_buffer.clone()).unwrap()
+            // count and pixel masking buffers
+            .add_image(gbuffer.sample_mask_buffer.clone()).unwrap()
             // voxel data
             .add_buffer(dbuffer.svdag_geometry_buffer.clone()).unwrap()
             .add_buffer(dbuffer.svdag_material_buffer.clone()).unwrap()
@@ -180,6 +187,8 @@ impl DescriptorSets {
             .add_image(gbuffer.reprojected_cnt_buffer.clone()).unwrap()
             .add_image(gbuffer.prev_cnt_buffer.clone()).unwrap()
             .add_sampled_image(dbuffer.skysphere_tex.clone(), dbuffer.lin_sampler.clone()).unwrap()
+            // count and pixel masking buffers
+            .add_image(gbuffer.sample_mask_buffer.clone()).unwrap()
             // voxel data
             .add_buffer(dbuffer.svdag_geometry_buffer.clone()).unwrap()
             .add_buffer(dbuffer.svdag_material_buffer.clone()).unwrap()

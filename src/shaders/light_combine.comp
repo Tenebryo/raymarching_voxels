@@ -62,9 +62,11 @@ layout(rgba32f,  binding = 16) uniform image2D position_prev_buf;
 layout(r32ui,    binding = 17) uniform uimage2D count_in_buf;
 layout(r32ui,    binding = 18) uniform uimage2D count_out_buf;
 layout(          binding = 19) uniform sampler2D skybox_tex;
+layout(r32ui,    binding = 20) readonly uniform uimage2D sample_mask_buf;
+
 
 // voxel geometry information and functions
-#define VOXEL_BINDING_OFFSET 20
+#define VOXEL_BINDING_OFFSET 21
 #include "voxel.glsl"
 
 // #define BRDF_BINDING_OFFSET (VOXEL_BINDING_END)
@@ -189,114 +191,123 @@ void main() {
         uint m0 = imageLoad(material0_buf, idx).x;
         uint m1 = imageLoad(material1_buf, idx).x;
 
+        uint mask = imageLoad(sample_mask_buf, idx).x;
+
         vec3 light = vec3(0);
 
-        if (p0.w > 0.5) {
-            // check if there is a contribution from the first intersection
-            
-            light += ambient_light;
+        if (mask == 0) {
+            // if this pixel is masked out, just use the data from the reprojected frame
+            imageStore(count_out_buf, idx, imageLoad(count_in_buf, idx));            
+            imageStore(light_buf, idx, imageLoad(light_prev_buf, idx));
+            imageStore(position0_buf, idx, imageLoad(position_prev_buf, idx));
+        } else {
+            if (p0.w > 0.5) {
+                // check if there is a contribution from the first intersection
+                
+                light += ambient_light;
 
-            vec3 r0 = camera_origin - p0.xyz;
+                vec3 r0 = camera_origin - p0.xyz;
 
-            // float d0 = length(r0);
+                // float d0 = length(r0);
 
-            float rdd0 = 1;// 1/(d0 * d0);
+                float rdd0 = 1;// 1/(d0 * d0);
 
-            r0 = normalize(r0);
+                r0 = normalize(r0);
 
-            // calculate the half angle of the first light reflection
-            vec3 h0 = normalize(r0 + ld0.xyz);
+                // calculate the half angle of the first light reflection
+                vec3 h0 = normalize(r0 + ld0.xyz);
 
-            // contribution from the emission of the voxel
-            light += materials[m0].emission * (rdd0 * max(0, dot(n0.xyz, r0)));
+                // contribution from the emission of the voxel
+                light += materials[m0].emission * (rdd0 * max(0, dot(n0.xyz, r0)));
 
-            // contribution of the light bounce from the first ray intersection
-            float brdf_weight_0 = max(0, dot(n0.xyz, h0)); // PLACEHOLDER for brdf(out=r0,in=ldir0)
-            light += (materials[m0].albedo) * l0 * (brdf_weight_0 * rdd0);
+                // contribution of the light bounce from the first ray intersection
+                float brdf_weight_0 = max(0, dot(n0.xyz, h0)); // PLACEHOLDER for brdf(out=r0,in=ldir0)
+                light += (materials[m0].albedo) * l0 * (brdf_weight_0 * rdd0);
 
-            vec3 light_bounce = vec3(0);
-            
-            if (p1.w > 0.5) {
+                vec3 light_bounce = vec3(0);
+                
+                if (p1.w > 0.5) {
 
-                vec3 r1 = p0.xyz - p1.xyz;
+                    vec3 r1 = p0.xyz - p1.xyz;
 
-                float d1 = length(r1);
-                // float rdd1 = 1 / (d1 * d1);
-                float rdd1 = min(0.1, 1 / (d1 * d1));
-
-
-                // float d1 = dot(r1, r1);
-                // float rdd1 = 1 / d1;
+                    float d1 = length(r1);
+                    // float rdd1 = 1 / (d1 * d1);
+                    float rdd1 = min(0.1, 1 / (d1 * d1));
 
 
-                r1 = normalize(r1);
+                    // float d1 = dot(r1, r1);
+                    // float rdd1 = 1 / d1;
 
-                // calculate half angle for second light reflection
-                vec3 h1 = normalize(r1 + ld1.xyz);
 
-                float brdf_weight_10 = 2.0; // PLACEHOLDER for brdf(out=r0,in=-r1) (actually, due to importance sampling used for the bounce direction, this will always be 1)
-                float brdf_weight_1 = max(0, dot(n1.xyz, h1)); // PLACEHOLDER for brdf(out=r1,in=ldir1)
+                    r1 = normalize(r1);
 
-                // contribution of material emission from the second ray intersection
-                light_bounce +=  materials[m1].emission * (brdf_weight_10 * rdd0 * rdd1 * max(0, dot(n1.xyz, r1)));
+                    // calculate half angle for second light reflection
+                    vec3 h1 = normalize(r1 + ld1.xyz);
 
-                // contribution of light bounce from the second ray intersection
-                light_bounce += (materials[m1].albedo) * l1 * (brdf_weight_10 * brdf_weight_1 * rdd0 * rdd1);
+                    float brdf_weight_10 = 2.0; // PLACEHOLDER for brdf(out=r0,in=-r1) (actually, due to importance sampling used for the bounce direction, this will always be 1)
+                    float brdf_weight_1 = max(0, dot(n1.xyz, h1)); // PLACEHOLDER for brdf(out=r1,in=ldir1)
 
-                // light = r1;
+                    // contribution of material emission from the second ray intersection
+                    light_bounce +=  materials[m1].emission * (brdf_weight_10 * rdd0 * rdd1 * max(0, dot(n1.xyz, r1)));
 
-                // light = vec3(rdd1);
+                    // contribution of light bounce from the second ray intersection
+                    light_bounce += (materials[m1].albedo) * l1 * (brdf_weight_10 * brdf_weight_1 * rdd0 * rdd1);
 
+                    // light = r1;
+
+                    // light = vec3(rdd1);
+
+                } else {
+                    // if p1
+                    vec3 d = normalize(p1.xyz);
+
+                    float theta = atan(d.z, d.x);
+                    float phi = - asin(d.y);
+
+                    const float R_PI = 1.0 / (PI);
+
+                    light_bounce = texture(skybox_tex, vec2(theta * R_PI * 0.5, phi * R_PI + 0.5)).rgb;
+                }
+                
+                light += light_bounce * materials[m0].albedo;
             } else {
-                // if p1
-                vec3 d = normalize(p1.xyz);
+                // skybox
+                vec3 d = normalize(p0.xyz);
 
                 float theta = atan(d.z, d.x);
                 float phi = - asin(d.y);
 
                 const float R_PI = 1.0 / (PI);
 
-                light_bounce = texture(skybox_tex, vec2(theta * R_PI * 0.5, phi * R_PI + 0.5)).rgb;
+                light = texture(skybox_tex, vec2(theta * R_PI * 0.5, phi * R_PI + 0.5)).rgb;
             }
+
+            // light = p1.xyz;
             
-            light += light_bounce * materials[m0].albedo;
-        } else {
-            // skybox
-            vec3 d = normalize(p0.xyz);
+            vec4 prev_light = imageLoad(light_prev_buf, idx);
 
-            float theta = atan(d.z, d.x);
-            float phi = - asin(d.y);
+            vec4 prev_pos = imageLoad(position_prev_buf, idx);
+            
+            uint count = imageLoad(count_in_buf, idx).x;
+            count = max(1, count);
 
-            const float R_PI = 1.0 / (PI);
+            float w = 1.0;
 
-            light = texture(skybox_tex, vec2(theta * R_PI * 0.5, phi * R_PI + 0.5)).rgb;
+            // if (projection_dist > 0.001 || isnan(projection_dist)) {
+            //     // if the reprojection failed, then reset the count
+            //     w = 0.0;
+            //     count = 1;
+            // }
+
+            imageStore(count_out_buf, idx, uvec4(count));
+
+            // vec4 light_val = vec4(mix(light, prev_light.xyz, prev_light.w * w * 0.5), 1.0);
+            vec4 light_val = vec4(mix(light, prev_light.rgb, prev_light.w * w * (1.0 - 1.0 / count)), 1.0);
+            vec4 position_val = vec4(mix(p0.xyz, prev_pos.xyz, prev_pos.w * w * (1.0 - 1.0 / count)), 1.0);
+            
+            // store average position and color of each sample
+            imageStore(light_buf, idx, light_val);
+            imageStore(position0_buf, idx, position_val);
         }
-
-        // light = p1.xyz;
-        
-        vec4 prev_light = imageLoad(light_prev_buf, idx);
-
-        vec4 prev_pos = imageLoad(position_prev_buf, idx);
-        
-        uint count = imageLoad(count_in_buf, idx).x;
-        count = max(1, count);
-
-        float w = 1.0;
-
-        // if (projection_dist > 0.001 || isnan(projection_dist)) {
-        //     // if the reprojection failed, then reset the count
-        //     w = 0.0;
-        //     count = 1;
-        // }
-
-        imageStore(count_out_buf, idx, uvec4(count));
-
-        // vec4 light_val = vec4(mix(light, prev_light.xyz, prev_light.w * w * 0.5), 1.0);
-        vec4 light_val = vec4(mix(light, prev_light.rgb, prev_light.w * w * (1.0 - 1.0 / count)), 1.0);
-        vec4 position_val = vec4(mix(p0.xyz, prev_pos.xyz, prev_pos.w * w * (1.0 - 1.0 / count)), 1.0);
-        
-        // store average position and color of each sample
-        imageStore(light_buf, idx, light_val);
-        imageStore(position0_buf, idx, position_val);
     }
 }

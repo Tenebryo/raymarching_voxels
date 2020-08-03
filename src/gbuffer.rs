@@ -58,6 +58,8 @@ pub struct GBuffer {
     pub iteration_count_buffer : Arc<StorageImage<Format>>,
 
     pub output_buffer : Arc<StorageImage<Format>>,
+
+    pub sample_mask_buffer : Arc<StorageImage<Format>>,
     
     pub pre_trace_width : u32,
     pub pre_trace_height : u32,
@@ -128,6 +130,8 @@ impl GBuffer {
 
         let output_buffer               = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
 
+        let sample_mask_buffer                 = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
+
         GBuffer {
             temp_buffers,
             index_buffer,
@@ -167,6 +171,7 @@ impl GBuffer {
             pre_trace_width,
             pre_trace_height,
             output_buffer,
+            sample_mask_buffer,
         }
     }
 }

@@ -70,9 +70,11 @@ layout(rgba32f,  binding = 14) uniform image2D ldir1_buf;
 layout(rgba32f,  binding = 15) uniform image2D light0_buf;
 layout(rgba32f,  binding = 16) uniform image2D light1_buf;
 layout(rgba32ui, binding = 17) uniform uimage2D iteration_buf;
+layout(r32ui,    binding = 18) readonly uniform uimage2D sample_count_buf;
+layout(r32ui,    binding = 19) uniform uimage2D sample_mask_buf;
 
 // voxel geometry information and functions
-#define VOXEL_BINDING_OFFSET 18
+#define VOXEL_BINDING_OFFSET 20
 #include "voxel.glsl"
 
 layout(push_constant) uniform LightBouncePushConstantData {
@@ -84,6 +86,7 @@ layout(push_constant) uniform LightBouncePushConstantData {
     uint n_spot_lights;
     float render_dist;
     uint max_depth;
+    uint sample_cutoff;
 };
 
 /// calculate the half-angle vector from two incident vectors (normalized)
@@ -191,6 +194,15 @@ void main() {
     if (idx.x < size.x && idx.y < size.y) {
 
         vec4  p = imageLoad(position0_buf, idx);
+        uint  c = imageLoad(sample_count_buf, idx).r;
+
+        if (c > sample_cutoff) {
+            // skip lighting this pixel because it already has enough samples
+            imageStore(sample_mask_buf, idx, uvec4(0));
+            return;
+        } else {
+            imageStore(sample_mask_buf, idx, uvec4(1));
+        }
 
         if (p.w < 1e-6) {
             return;

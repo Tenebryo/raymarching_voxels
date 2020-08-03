@@ -90,10 +90,10 @@ fn main() {
     let event_loop = EventLoop::new();
     let surface = WindowBuilder::new()
         .with_title("Voxel Renderer")
-        .with_maximized(true)
+        // .with_maximized(true)
         .build_vk_surface(&event_loop, instance.clone()).unwrap();
 
-    surface.window().set_maximized(true);
+    // surface.window().set_maximized(true);
 
     let compute_queue_family = physical.queue_families().find(|&q| q.supports_compute()).unwrap();
     // We take the first queue that supports drawing to our window.
@@ -367,7 +367,8 @@ fn main() {
     let p_start = Instant::now();
     let mut adaptation = 2.0;
     let mut exposure = 1.0;
-    let mut reprojection_miss_ratio = 0.05;
+    let mut reprojection_miss_ratio = 0.02;
+    let mut sample_cutoff = 64;
     let mut atrous_col_weight = 0.1; // 0.1;
     let mut atrous_nrm_weight = 0.0001; // 32.0;
     let mut atrous_pos_weight = 0.0001; // 16.0;
@@ -541,8 +542,8 @@ fn main() {
         // CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, materials.iter().cloned()).unwrap()
 
 
-        // let material_bytes = std::fs::read("./data/dag/sponza_mats.mats")
-        let material_bytes = std::fs::read("./data/dag/sibenik_mats.mats")
+        let material_bytes = std::fs::read("./data/dag/sponza_mats.mats")
+        // let material_bytes = std::fs::read("./data/dag/sibenik_mats.mats")
             .expect("failed to read material file");
 
         let mut materials : Vec<shaders::Material> = vec![
@@ -691,7 +692,7 @@ fn main() {
 
                     let (t, _t_var, fps, _) = fps.stats();
 
-                    Window::new(im_str!("Info"))
+                    imgui::Window::new(im_str!("Info"))
                         .flags(WindowFlags::NO_MOVE | WindowFlags::NO_COLLAPSE)
                         .size([400.0, height as f32], Condition::FirstUseEver)
                         .position([0.0, 0.0], Condition::FirstUseEver)
@@ -712,18 +713,25 @@ fn main() {
 
                             ui.separator();
 
-                            Slider::new(im_str!("Exposure"), 0.1..=5.0)
+                            imgui::Slider::new(im_str!("Exposure"), 0.1..=5.0)
                                 .build(&ui, &mut exposure);
                                 
-                            Slider::new(im_str!("Adaptation"), 0.1..=5.0)
+                            imgui::Slider::new(im_str!("Adaptation"), 0.1..=5.0)
                                 .build(&ui, &mut adaptation);
 
-                            Slider::new(im_str!("LoD"), 1..=15)
+                            imgui::Slider::new(im_str!("LoD"), 1..=15)
                                 .build(&ui, &mut intersect_pc.max_depth);
 
-                            Slider::new(im_str!("Miss Ratio"), 0.0..=1.0)
+                            imgui::Slider::new(im_str!("Miss Ratio"), 0.0..=1.0)
                                 .power(2.0)
                                 .build(&ui, &mut reprojection_miss_ratio);
+                                
+                            imgui::InputInt::new(&ui, im_str!("Sample Cutoff"), &mut sample_cutoff)
+                                .step(1).step_fast(10)
+                                .auto_select_all(true)
+                                .build();
+
+                            sample_cutoff = sample_cutoff.abs();
 
                             ui.separator();
 
@@ -731,19 +739,19 @@ fn main() {
 
                                 ui.checkbox(im_str!("Enabled"), &mut atrous_enable);
                                 
-                                Slider::new(im_str!("c_phi"), 0.00001..=4.0)
+                                imgui::Slider::new(im_str!("c_phi"), 0.00001..=4.0)
                                     .power(2.0)
                                     .build(&ui, &mut atrous_col_weight);
                                 
-                                Slider::new(im_str!("n_phi"), 0.00001..=4.0)
+                                imgui::Slider::new(im_str!("n_phi"), 0.00001..=4.0)
                                     .power(2.0)
                                     .build(&ui, &mut atrous_nrm_weight);
                                 
-                                Slider::new(im_str!("p_phi"), 0.00001..=4.0)
+                                imgui::Slider::new(im_str!("p_phi"), 0.00001..=4.0)
                                     .power(2.0)
                                     .build(&ui, &mut atrous_pos_weight);
 
-                                Slider::new(im_str!("iterations"), 2..=8)
+                                imgui::Slider::new(im_str!("iterations"), 2..=8)
                                     .build(&ui, &mut atrous_iterations);
 
                             }
@@ -806,6 +814,7 @@ fn main() {
                     n_spot_lights : 0,
                     render_dist : intersect_pc.render_dist,
                     max_depth : intersect_pc.max_depth,
+                    sample_cutoff : sample_cutoff as u32,
                 };
                 
                 let light_occlude_pc_a = shaders::LightOccludePushConstantData {

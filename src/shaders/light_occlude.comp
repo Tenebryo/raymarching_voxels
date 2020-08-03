@@ -27,11 +27,13 @@ layout(rgba32f,  binding = 1) readonly uniform image2D position_buf;
 layout(rgba32f,  binding = 2) readonly uniform image2D ldir_buf;
 layout(rgba32f,  binding = 3) uniform image2D light_buf;
 layout(rgba32ui, binding = 4) uniform uimage2D iteration_buf;
+layout(r32ui,    binding = 5) readonly uniform uimage2D sample_mask_buf;
+
 
 #define TESTING_DEBUG 1
 
 // voxel geometry information and functions
-#define VOXEL_BINDING_OFFSET 5
+#define VOXEL_BINDING_OFFSET 6
 #include "voxel.glsl"
 
 layout(push_constant) uniform LightOccludePushConstantData {
@@ -66,11 +68,12 @@ void main() {
 
         vec4 pos = imageLoad(position_buf, idx);
         vec4 ldd = imageLoad(ldir_buf, idx);
+        uint mask = imageLoad(sample_mask_buf, idx).r;
 
         vec3 p = pos.xyz;
 
-        if (pos.w < 1e-6) {
-            // exit if there aren't rays to cast
+        if (pos.w < 1e-6 || mask == 0) {
+            // exit if there aren't rays to cast or we are skipping this pixel
             return;
         }
 
