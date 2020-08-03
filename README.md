@@ -3,7 +3,17 @@ Experimental Voxel Raymarcher
 
 This repository contains the source for my experiments with a raymarching voxel renderer, global illumination, and Vulkan.
 
-Currently the raycasting shaders can cast ~200M Mrays/s, depending on geometry, but that should be improvable.
+## Screenshots
+
+These screenshots show the types of images the renderer can currently produce under the best circumstances. I'm still in the process of implementing improved sampling and denoising algorithms, so it doesn't look great while moving around yet.
+
+![sponza-arch](data/screenshots/sponza_color_softer_shadows.png)
+![sponza-balcony](data/screenshots/sponza_color_balcony.png)
+
+## Performance
+
+On a RTX 2070 Super, the raycasting shaders can cast ~200M Mrays/s, depending on geometry, which corresponds to around 20 fps when computing lighting for every pixel.
+I plan on making a optimization pass later to improve this. 
 
 ## Rendering Pipeline
 
@@ -48,6 +58,7 @@ Lighting:
 * [Efficient BRDF Importance Sampling Using A Factored Representation](https://gfx.cs.princeton.edu/gfx/proj/brdf/brdf.pdf)
 * [A Data-Driven Reflectance Model](https://cseweb.ucsd.edu/~ravir/6160/papers/p759-matusik.pdf)
 * [Metropolis Light Transport](https://graphics.stanford.edu/papers/metro/metro.pdf)
+* [A Practical Introduction to Metropolis LightTransport](https://pdfs.semanticscholar.org/a386/55316ee7f438ba115b38e8d0b1410c691a26.pdf)
 
 Denoising:
 

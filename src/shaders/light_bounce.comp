@@ -13,6 +13,7 @@ struct PointLight {
     float power;
     vec3 color;
     float radius;
+    float max_radiance;
 };
 
 struct DirectionalLight {
@@ -27,6 +28,7 @@ struct SpotLight {
     vec3 direction;
     float half_angle;
     vec3 color;
+    float max_radiance;
 };
 
 struct Material {
@@ -324,6 +326,7 @@ void main() {
 
                 vec3 lpos = point_lights[li].position;
                 float r = point_lights[li].radius;
+                float mrad = point_lights[li].max_radiance;
 
                 ldir0 = lpos + rsp1_3d * r - p0;
                 ldir1 = lpos + rsp2_3d * r - p1.xyz;
@@ -337,12 +340,14 @@ void main() {
                 vec3 lcol = point_lights[li].color;
                 float lpow = point_lights[li].power;
 
-                light0.xyz = lcol * lpow / (ldist0 * ldist0);
-                light1.xyz = lcol * lpow / (ldist1 * ldist1);
+                light0.xyz = lcol * min(mrad, lpow / (ldist0 * ldist0));
+                light1.xyz = lcol * min(mrad, lpow / (ldist1 * ldist1));
             } else if (l_type == 2) {
                 // spot light. for now assume perfect point lights
                 ldir0 = spots_lights[li].position - p0;
                 ldir1 = spots_lights[li].position - p1.xyz;
+
+                float mrad = point_lights[li].max_radiance;
 
                 ldist0 = length(ldir0);
                 ldist1 = length(ldir1);
@@ -350,8 +355,8 @@ void main() {
                 ldir0 = normalize(ldir0);
                 ldir1 = normalize(ldir1);
 
-                light0.xyz = spots_lights[li].color * max(0, pow(dot(spots_lights[li].direction, -ldir0), 3)) * spots_lights[li].power / (ldist0 * ldist0);
-                light1.xyz = spots_lights[li].color * max(0, pow(dot(spots_lights[li].direction, -ldir1), 3)) * spots_lights[li].power / (ldist1 * ldist1);
+                light0.xyz = spots_lights[li].color * min(mrad, max(0, pow(dot(spots_lights[li].direction, -ldir0), 3)) * spots_lights[li].power / (ldist0 * ldist0));
+                light1.xyz = spots_lights[li].color * min(mrad, max(0, pow(dot(spots_lights[li].direction, -ldir1), 3)) * spots_lights[li].power / (ldist1 * ldist1));
             }
 
             if (!hit) {

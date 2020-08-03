@@ -368,7 +368,7 @@ fn main() {
     let mut adaptation = 2.0;
     let mut exposure = 1.0;
     let mut reprojection_miss_ratio = 0.02;
-    let mut sample_cutoff = 64;
+    let mut sample_cutoff = 512;
     let mut atrous_col_weight = 0.1; // 0.1;
     let mut atrous_nrm_weight = 0.0001; // 32.0;
     let mut atrous_pos_weight = 0.0001; // 16.0;
@@ -413,7 +413,8 @@ fn main() {
     let mut svdag_geometry_data = {
 
         // let chunk_bytes_sponza = std::fs::read("./data/dag/sponza.svdag").unwrap();
-        let chunk_bytes_sponza = std::fs::read("./data/dag/sponza_mats.svdag").unwrap();
+        let chunk_bytes_sponza = std::fs::read("./data/dag/sponza_tex.svdag").unwrap();
+        // let chunk_bytes_sponza = std::fs::read("./data/dag/sponza_mats.svdag").unwrap();
         // let chunk_bytes_sibenik = std::fs::read("./data/dag/sibenik_mats.svdag").unwrap();
         
         bincode::deserialize::<vox::VoxelChunk>(&chunk_bytes_sponza).expect("Deserialization Failed")
@@ -447,28 +448,44 @@ fn main() {
             //     radius : 0.005,
             // },
             PointLight {
+                position : [0.5, 0.3, 0.3],
+                power : 0.01,
+                color : [1.0, 1.0, 1.0],
+                radius : 0.02,
+                max_radiance : 10.0,
+                _dummy0 : [0;12],
+            },
+            PointLight {
                 position : [0.19, 0.125, 0.2],
                 power : 0.002,
                 color : [1.0, 1.0, 1.0],
-                radius : 0.0,
+                radius : 0.005,
+                max_radiance : 1.0,
+                _dummy0 : [0;12],
             },
             PointLight {
                 position : [0.19, 0.125, 0.40],
                 power : 0.002,
                 color : [1.0, 1.0, 1.0],
-                radius : 0.0,
+                radius : 0.005,
+                max_radiance : 1.0,
+                _dummy0 : [0;12],
             },
             PointLight {
                 position : [0.81, 0.125, 0.2],
                 power : 0.002,
                 color : [1.0, 1.0, 1.0],
-                radius : 0.0,
+                radius : 0.005,
+                max_radiance : 1.0,
+                _dummy0 : [0;12],
             },
             PointLight {
                 position : [0.81, 0.125, 0.40],
                 power : 0.002,
                 color : [1.0, 1.0, 1.0],
-                radius : 0.0,
+                radius : 0.005,
+                max_radiance : 1.0,
+                _dummy0 : [0;12],
             }
         ];
 
@@ -502,7 +519,7 @@ fn main() {
                 half_angle : 0.0,
                 power : 0.0,
                 color : [1.0, 1.0, 1.0],
-                _dummy0 : [0;4],
+                max_radiance : 1.0,
             }
         ];
 
@@ -542,7 +559,8 @@ fn main() {
         // CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, materials.iter().cloned()).unwrap()
 
 
-        let material_bytes = std::fs::read("./data/dag/sponza_mats.mats")
+        let material_bytes = std::fs::read("./data/dag/sponza_tex.mats")
+        // let material_bytes = std::fs::read("./data/dag/sponza_mats.mats")
         // let material_bytes = std::fs::read("./data/dag/sibenik_mats.mats")
             .expect("failed to read material file");
 
@@ -810,7 +828,7 @@ fn main() {
                     camera_up : pre_trace_pc.camera_up,
                     camera_origin : pre_trace_pc.camera_origin,
                     n_directional_lights : 0,
-                    n_point_lights : 4,
+                    n_point_lights : 1,
                     n_spot_lights : 0,
                     render_dist : intersect_pc.render_dist,
                     max_depth : intersect_pc.max_depth,
@@ -873,7 +891,6 @@ fn main() {
                 // number of blocks depends on the runtime-computed local_size parameters of the physical device
                 let block_dim_x = (width - 1) / local_size_x + 1;
                 let block_dim_y = (height - 1) / local_size_y + 1;
-
 
                 let mut render_command_buffer_builder = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap();
 
@@ -1099,7 +1116,6 @@ fn main() {
             } else if input.scroll_diff() > 0.0 && intersect_pc.max_depth < 15 {
                 intersect_pc.max_depth += 1;
             }
-
             
             if input.key_held(VirtualKeyCode::Escape) {*control_flow = ControlFlow::Exit;}
         }

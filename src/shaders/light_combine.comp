@@ -197,7 +197,7 @@ void main() {
 
         if (mask == 0) {
             // if this pixel is masked out, just use the data from the reprojected frame
-            imageStore(count_out_buf, idx, imageLoad(count_in_buf, idx));            
+            imageStore(count_out_buf, idx, imageLoad(count_in_buf, idx) - 1);            
             imageStore(light_buf, idx, imageLoad(light_prev_buf, idx));
             imageStore(position0_buf, idx, imageLoad(position_prev_buf, idx));
         } else {

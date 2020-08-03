@@ -44,9 +44,10 @@ void main() {
 
         ivec2 tile_idx = idx / int(noise_frames);
         
-        uint noise_i = noise_idx.x + tile_idx.x * noise_idx.y + tile_idx.y * noise_idx.z;
+        // uint noise_i = noise_idx.x + tile_idx.x * noise_idx.y + tile_idx.y * noise_idx.z;
+        uint noise_i = noise_idx.x;
 
-        vec4 noise_value = texture(blue_noise, vec3(idx / vec2(noise_frames), noise_i / float(noise_frames)));
+        vec4 noise_value = texture(blue_noise, vec3((idx + ivec2(noise_idx.y, noise_idx.z)) / vec2(noise_frames), noise_i / float(noise_frames)));
         // vec4 noise_value = texture(blue_noise, vec3(idx / vec2(noise_frames), noise_i / float(noise_frames)));
 
         vec4 noise_value_2 = texture(blue_noise, vec3(idx / vec2(noise_frames), (noise_i + 1) / float(noise_frames)));

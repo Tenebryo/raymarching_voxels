@@ -35,6 +35,12 @@ const ivec2 OFFSETS[9] = {
     ivec2(-1, 1), ivec2( 0, 1), ivec2( 1, 1),
 };
 
+const int COUNT_PENALTIES[9] = {
+    1, 1, 1,
+    1, 0, 1,
+    1, 1, 1,
+};
+
 float dist_sq(vec3 a, vec3 b) {
     vec3 d = a - b;
     return dot(d, d);
@@ -121,8 +127,7 @@ void main() {
         // load from previous frame
         vec4 pos = imageLoad(prev_pos_buf, nidx);
         vec4 col = imageLoad(prev_col_buf, nidx);
-        uint cnt = imageLoad(prev_cnt_buf, nidx).r;
-
+        uint cnt = max(1, int(imageLoad(prev_cnt_buf, nidx).r) - COUNT_PENALTIES[min_i]);
         
         if (min_i != 4) {
             cnt -= 2;
