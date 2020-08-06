@@ -9,12 +9,14 @@ layout(rgba32f, binding = 1) uniform image2D nImage;  // normal
 layout(rgba32f, binding = 2) uniform image2D pImage;  // world position
 layout(r32f, binding = 3) uniform image2D dImage;  // depth
 layout(r32ui, binding = 4) uniform uimage2D mImage;   // material index
-layout(rgba32f, binding = 5) uniform image2D sImage;   // random seed index
-layout(binding = 6) uniform sampler3D blue_noise;   // random noise
-layout(rgba32ui, binding = 7) uniform uimage2D iteration_buf;   // random noise
-layout(rg32ui,   binding = 8) uniform uimage2D stratum_buf;   // random noise
+layout(rgba32f, binding = 5) uniform image2D s0Image;   // random seed index
+layout(rgba32f, binding = 6) uniform image2D s1Image;   // random seed index
+layout(rgba32f, binding = 7) uniform image2D s2Image;   // random seed index
+layout(binding = 8) uniform sampler3D blue_noise;   // random noise
+layout(rgba32ui, binding = 9) uniform uimage2D iteration_buf;   // random noise
+layout(rg32ui,   binding = 10) uniform uimage2D stratum_buf;   // random noise
 
-#define VOXEL_BINDING_OFFSET 9
+#define VOXEL_BINDING_OFFSET 11
 #include "voxel.glsl"
 
 layout(push_constant) uniform IntersectPushConstants {
@@ -24,7 +26,9 @@ layout(push_constant) uniform IntersectPushConstants {
     uint max_depth;
     vec3 camera_up;
     float render_dist;
-    uvec4 noise_idx;
+    uvec3 noise_0;
+    uvec3 noise_1;
+    uvec3 noise_2;
     uint noise_frames;
 };
 
@@ -43,14 +47,10 @@ void main() {
     if (idx.x < size.x && idx.y < size.y) {
 
         ivec2 tile_idx = idx / int(noise_frames);
-        
-        // uint noise_i = noise_idx.x + tile_idx.x * noise_idx.y + tile_idx.y * noise_idx.z;
-        uint noise_i = noise_idx.x;
 
-        vec4 noise_value = texture(blue_noise, vec3((idx + ivec2(noise_idx.y, noise_idx.z)) / vec2(noise_frames), noise_i / float(noise_frames)));
-        // vec4 noise_value = texture(blue_noise, vec3(idx / vec2(noise_frames), noise_i / float(noise_frames)));
-
-        vec4 noise_value_2 = texture(blue_noise, vec3(idx / vec2(noise_frames), (noise_i + 1) / float(noise_frames)));
+        vec4 noise_value_0 = texture(blue_noise, vec3((idx + ivec2(noise_0.x, noise_0.y)) / vec2(noise_frames), noise_0.z / float(noise_frames)));
+        vec4 noise_value_1 = texture(blue_noise, vec3((idx + ivec2(noise_1.x, noise_1.y)) / vec2(noise_frames), noise_1.z / float(noise_frames)));
+        vec4 noise_value_2 = texture(blue_noise, vec3((idx + ivec2(noise_2.x, noise_2.y)) / vec2(noise_frames), noise_2.z / float(noise_frames)));
 
         // calculate ray for this pixel by constructing a virtual screen
         vec3 vx = normalize(cross(camera_forward, camera_up));
@@ -107,17 +107,21 @@ void main() {
             imageStore(dImage, idx, vec4(dist));
             imageStore(pImage, idx, vec4(p, 1.0));
             imageStore(mImage, idx, uvec4(material));
-            imageStore(sImage, idx, vec4(noise_value));
+            imageStore(s0Image, idx, noise_value_0);
+            imageStore(s1Image, idx, noise_value_1);
+            imageStore(s2Image, idx, noise_value_2);
             imageStore(iteration_buf, idx, uvec4(iter, 0, 0, 0));
-            imageStore(stratum_buf, idx, uvec4(noise_value_2 * 4));
+            imageStore(stratum_buf, idx, uvec4(noise_value_2.zwxy * 4));
         } else {
             imageStore(nImage, idx, vec4(0.0));
             imageStore(dImage, idx, vec4(render_dist+1));
             imageStore(pImage, idx, vec4(render_dist * ray_dir, 0.0));
             imageStore(mImage, idx, uvec4(0));
-            imageStore(sImage, idx, vec4(noise_value));
+            imageStore(s0Image, idx, noise_value_0);
+            imageStore(s1Image, idx, noise_value_1);
+            imageStore(s2Image, idx, noise_value_2);
             imageStore(iteration_buf, idx, uvec4(iter, 0, 0, 0));
-            imageStore(stratum_buf, idx, uvec4(noise_value_2 * 4));
+            imageStore(stratum_buf, idx, uvec4(noise_value_2.zwxy * 4));
         }
     }
 }

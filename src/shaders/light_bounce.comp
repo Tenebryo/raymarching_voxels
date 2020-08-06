@@ -65,18 +65,20 @@ layout(rgba32f,  binding = 7)  uniform image2D normal1_buf;
 layout(r32f,     binding = 8)  readonly uniform image2D depth_buf;
 layout(r32ui,    binding = 9)  readonly uniform uimage2D material0_buf;
 layout(r32ui,    binding = 10) uniform uimage2D material1_buf;
-layout(rgba32f,  binding = 11) readonly uniform image2D rng_seed_buf;
-layout(rgba32ui, binding = 12) uniform uimage2D light_index_buf;
-layout(rgba32f,  binding = 13) uniform image2D ldir0_buf;
-layout(rgba32f,  binding = 14) uniform image2D ldir1_buf;
-layout(rgba32f,  binding = 15) uniform image2D light0_buf;
-layout(rgba32f,  binding = 16) uniform image2D light1_buf;
-layout(rgba32ui, binding = 17) uniform uimage2D iteration_buf;
-layout(r32ui,    binding = 18) readonly uniform uimage2D sample_count_buf;
-layout(r32ui,    binding = 19) uniform uimage2D sample_mask_buf;
+layout(rgba32f,  binding = 11) readonly uniform image2D noise0_buf;
+layout(rgba32f,  binding = 12) readonly uniform image2D noise1_buf;
+layout(rgba32f,  binding = 13) readonly uniform image2D noise2_buf;
+layout(rgba32ui, binding = 14) uniform uimage2D light_index_buf;
+layout(rgba32f,  binding = 15) uniform image2D ldir0_buf;
+layout(rgba32f,  binding = 16) uniform image2D ldir1_buf;
+layout(rgba32f,  binding = 17) uniform image2D light0_buf;
+layout(rgba32f,  binding = 18) uniform image2D light1_buf;
+layout(rgba32ui, binding = 19) uniform uimage2D iteration_buf;
+layout(r32ui,    binding = 20) readonly uniform uimage2D sample_count_buf;
+layout(r32ui,    binding = 21) uniform uimage2D sample_mask_buf;
 
 // voxel geometry information and functions
-#define VOXEL_BINDING_OFFSET 20
+#define VOXEL_BINDING_OFFSET 22
 #include "voxel.glsl"
 
 layout(push_constant) uniform LightBouncePushConstantData {
@@ -206,21 +208,19 @@ void main() {
             imageStore(sample_mask_buf, idx, uvec4(1));
         }
 
-        if (p.w < 1e-6) {
-            return;
-        }
-
         vec4  n = imageLoad(normal0_buf, idx);
         vec4  d = imageLoad(depth_buf, idx);
         uvec4 m = imageLoad(material0_buf, idx);
-        vec4  s = imageLoad(rng_seed_buf, idx);
+        vec4 ns0 = imageLoad(noise0_buf, idx);
+        vec4 ns1 = imageLoad(noise1_buf, idx);
+        vec4 ns2 = imageLoad(noise2_buf, idx);
 
         vec3 out_0 = normalize(camera_origin - p.xyz);
 
         // generate some pseudo random numbers
-        vec2 rv0 = s.xy;
-        vec3 rv1 = s.zyw;
-        vec3 rv2 = s.xzy;
+        vec2 rv0 = vec2(ns0.w, ns1.w);
+        vec3 rv1 = ns0.xyz;
+        vec3 rv2 = ns1.xyz;
 
         vec2 rsp1_2d = sample_hemisphere(rv1.x + 1e-6, 0.99 * rv1.y);
         vec2 rsp2_2d = sample_hemisphere(rv2.x + 1e-6, 0.99 * rv2.y);
@@ -236,6 +236,7 @@ void main() {
         vec3 ldir0 = vec3(0), ldir1 = vec3(0);
         vec4 p1 = vec4(0), light0 = vec4(0), light1 = vec4(0), norm1 = vec4(0);
         float ldist0 = 0, ldist1 = 0;
+        uint light_index = 0;
 
         if (p.w > 0.5) {
             
@@ -288,7 +289,10 @@ void main() {
             // * cast rays from path intersection points to the chosen light point
             // * calculate light contributions
 
-            li = uint(abs(s.w) * (n_directional_lights + n_point_lights + n_spot_lights));
+            uint n_lights = n_directional_lights + n_point_lights + n_spot_lights;
+
+            li = uint(abs(ns2.x) * n_lights);
+            light_index = li;
             uint l_type = 0;
 
             if (li >= n_directional_lights) {
@@ -319,7 +323,7 @@ void main() {
                 ldist0 = render_dist;
                 ldist1 = render_dist;
 
-                light0.xyz = directional_lights[li].color;
+                light0.xyz = n_lights * directional_lights[li].color;
                 light1 = light0;
             } else if (l_type == 1) {
                 // point light. for now assume perfect point lights
@@ -340,8 +344,8 @@ void main() {
                 vec3 lcol = point_lights[li].color;
                 float lpow = point_lights[li].power;
 
-                light0.xyz = lcol * min(mrad, lpow / (ldist0 * ldist0));
-                light1.xyz = lcol * min(mrad, lpow / (ldist1 * ldist1));
+                light0.xyz = lcol * (n_lights * min(mrad, lpow / (ldist0 * ldist0)));
+                light1.xyz = lcol * (n_lights * min(mrad, lpow / (ldist1 * ldist1)));
             } else if (l_type == 2) {
                 // spot light. for now assume perfect point lights
                 ldir0 = spots_lights[li].position - p0;
@@ -370,7 +374,7 @@ void main() {
             }
         }
 
-        imageStore(light_index_buf, idx, uvec4(li));
+        imageStore(light_index_buf, idx, uvec4(light_index));
         imageStore(material1_buf,   idx, uvec4(vmat_1));
         imageStore(ldir0_buf,       idx, vec4(ldir0, ldist0));
         imageStore(ldir1_buf,       idx, vec4(ldir1, ldist1));

@@ -21,8 +21,11 @@ pub struct Pipelines {
     pub light_combine     : Arc<ComputePipeline<PipelineLayout<shaders::light_combine_cs::Layout>>>,
     pub normal_blend      : Arc<ComputePipeline<PipelineLayout<shaders::normal_blend_cs::Layout>>>,
     pub atrous            : Arc<ComputePipeline<PipelineLayout<shaders::atrous_cs::Layout>>>,
+    pub apply_texture     : Arc<ComputePipeline<PipelineLayout<shaders::apply_texture_cs::Layout>>>,
     pub postprocess       : Arc<ComputePipeline<PipelineLayout<shaders::postprocess_cs::Layout>>>,
     pub stratified_sample : Arc<ComputePipeline<PipelineLayout<shaders::stratified_sample_cs::Layout>>>,
+    pub sample_decay      : Arc<ComputePipeline<PipelineLayout<shaders::sample_decay_cs::Layout>>>,
+    pub ray_test          : Arc<ComputePipeline<PipelineLayout<shaders::ray_test_cs::Layout>>>,
 }
 
 impl Pipelines {
@@ -156,6 +159,18 @@ impl Pipelines {
             ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
         });
 
+        let apply_texture = Arc::new({
+            use shaders::apply_texture_cs;
+
+            let spec_consts = apply_texture_cs::SpecializationConstants{
+                constant_1 : local_size_x,
+                constant_2 : local_size_y,
+            };
+
+            let shader = apply_texture_cs::Shader::load(device.clone()).unwrap();
+            ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
+        });
+
         let postprocess = Arc::new({
             use shaders::postprocess_cs;
 
@@ -181,6 +196,30 @@ impl Pipelines {
             ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
         });
 
+
+        let sample_decay = Arc::new({
+            use shaders::sample_decay_cs;
+
+            let spec_consts = sample_decay_cs::SpecializationConstants{
+                constant_1 : local_size_x,
+                constant_2 : local_size_y,
+            };
+
+            let shader = sample_decay_cs::Shader::load(device.clone()).unwrap();
+            ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
+        });
+        
+        let ray_test = Arc::new({
+            use shaders::ray_test_cs;
+
+            let spec_consts = ray_test_cs::SpecializationConstants{
+                constant_1 : local_size_x * local_size_y,
+            };
+
+            let shader = ray_test_cs::Shader::load(device.clone()).unwrap();
+            ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
+        });
+
         Pipelines {
             _update,
             _denoise,
@@ -192,8 +231,11 @@ impl Pipelines {
             light_combine,
             normal_blend,
             atrous,
+            apply_texture,
             postprocess,
             stratified_sample,
+            sample_decay,
+            ray_test,
         }
     }
 }

@@ -82,6 +82,22 @@ pub mod atrous_cs {
     }
 }
 
+pub mod apply_texture_cs {
+    vulkano_shaders::shader!{
+        ty: "compute",
+        path: "src/shaders/apply_texture.comp",
+        include: [],
+    }
+}
+
+pub mod sample_decay_cs {
+    vulkano_shaders::shader!{
+        ty: "compute",
+        path: "src/shaders/sample_decay.comp",
+        include: [],
+    }
+}
+
 pub mod postprocess_cs {
     vulkano_shaders::shader!{
         ty: "compute",
@@ -94,6 +110,14 @@ pub mod stratified_sample_cs {
     vulkano_shaders::shader!{
         ty: "compute",
         path: "src/shaders/stratified_sample.comp",
+        include: [],
+    }
+}
+
+pub mod ray_test_cs {
+    vulkano_shaders::shader!{
+        ty: "compute",
+        path: "src/shaders/ray_test.comp",
         include: [],
     }
 }
@@ -111,6 +135,8 @@ pub use normal_blend_cs::ty::NormalBlendPushConstantData;
 pub use atrous_cs::ty::AtrousPushConstantData;
 pub use postprocess_cs::ty::PostprocessPushConstantData;
 pub use stratified_sample_cs::ty::StratifiedSamplePushConstantData;
+pub use sample_decay_cs::ty::SampleDecayPushConstantData;
+pub use ray_test_cs::ty::RayTestPushConstants;
 
 // Graphics Primitive Types
 // pub use light_bounce_cs::ty::BRDF;
@@ -118,3 +144,5 @@ pub use light_bounce_cs::ty::PointLight;
 pub use light_bounce_cs::ty::DirectionalLight;
 pub use light_bounce_cs::ty::SpotLight;
 pub use light_bounce_cs::ty::Material;
+
+pub use ray_test_cs::ty::RayRequest;

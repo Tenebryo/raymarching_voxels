@@ -1,0 +1,51 @@
+#version 450
+
+struct RayRequest {
+    vec3 origin;
+    uint id;
+    vec3 dir;
+    uint max_depth;
+    float max_dist;
+    bool hit;
+    float dist;
+    // 0:X  1:-X  2:Y  3:-Y  4:Z  5:-Z
+    uint normal;
+    uint material;
+    uint voxel_id;
+    uint iterations;
+    uint return_code;
+};
+
+// specialization constants for the local sizes
+layout(local_size_x_id = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) buffer RayBlock {
+    RayRequest reqs[];
+};
+
+#define VOXEL_BINDING_OFFSET 1
+#include "voxel.glsl"
+
+layout(push_constant) uniform RayTestPushConstants {
+    uint request_count;
+};
+
+const vec3 INCIDENCE_NORMAL_VECTORS[3] = {vec3(1,0,0), vec3(0,1,0), vec3(0,0,1)};
+
+
+// for when bulk ray requests are needed, not as part of the rendering system.
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+
+    if (idx < request_count) {
+        RayRequest req = reqs[idx];
+
+        uint incidence = 0;
+
+        req.hit = voxel_march(req.origin, req.dir, req.max_depth, req.max_dist, req.dist, incidence, req.voxel_id, req.material, req.return_code, req.iterations);
+        
+        req.normal = incidence * int(sign(dot(INCIDENCE_NORMAL_VECTORS[incidence], sign(-req.dir))));
+
+        reqs[idx] = req;
+    }
+}

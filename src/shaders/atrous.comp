@@ -5,10 +5,12 @@ layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
 layout(rgba32f, binding = 0) readonly uniform image2D col_in_buf;
 layout(rgba32f, binding = 1) readonly uniform image2D pos_in_buf;
 layout(rgba32f, binding = 2) readonly uniform image2D nrm_in_buf;
-layout(r32ui,   binding = 3) readonly uniform uimage2D cnt_in_buf;
-layout(rgba32f, binding = 4) uniform image2D col_out_buf;
+layout(r32ui,   binding = 3) readonly uniform uimage2D mat_in_buf;
+layout(r32ui,   binding = 4) readonly uniform uimage2D cnt_in_buf;
+layout(rgba32f, binding = 5) uniform image2D col_out_buf;
 
 layout(push_constant) uniform AtrousPushConstantData {
+    vec3 camera_origin;
     int stride;
     float col_weight;
     float nrm_weight;
@@ -51,6 +53,11 @@ void main() {
         vec4 cval = imageLoad(col_in_buf, idx);
         vec4 nval = imageLoad(nrm_in_buf, idx);
         vec4 pval = imageLoad(pos_in_buf, idx);
+        uint mval = imageLoad(mat_in_buf, idx).r;
+
+        float depth = distance(camera_origin, pval.xyz);
+        float rdepth = 1.0 / (depth * depth);
+        float pdotn = dot(pval.xyz, nval.xyz);
 
         if (pval.w < 0.5) {
             imageStore(col_out_buf, idx, cval);
@@ -77,13 +84,25 @@ void main() {
             // compute weight from position difference
             vec4 ptmp = imageLoad(pos_in_buf, ki);
             vec4 pos_diff = pval - ptmp;
-            float pos_dist = dot(pos_diff, pos_diff);
+            float pos_dist = dot(pos_diff, pos_diff) * 1000 * rdepth;
             float pos_w = min(exp(-(pos_dist)/pos_weight),1.0);
 
             // weight the pixel by how many samples it represents
             uint count = imageLoad(cnt_in_buf, ki).x;
+            float cnt_w = 1.0 - exp(-count);
 
-            float weight = col_w * nrm_w * pos_w;// * log(count+1);
+
+            float weight = col_w * nrm_w * pos_w * cnt_w;
+
+            float planar_diff = pdotn - dot(ptmp.xyz, nval.xyz);
+            float planar_dist = planar_diff * planar_diff;
+            weight = pos_w * col_w;
+
+            if (planar_dist > 1e-9 || ntmp.xyz != nval.xyz) {
+                weight = 0;
+            }
+
+            // weight = pos_w * col_w * min(1.0, exp(-planar_dist / nrm_weight));
 
             sum += ctmp * weight * KERNEL[i];
             total_w += weight * KERNEL[i];

@@ -15,7 +15,9 @@ pub struct GBuffer {
     
     pub index_buffer : Arc<StorageImage<Format>>,
     pub light_index_buffer : Arc<StorageImage<Format>>,
-    pub rng_seed_buffer : Arc<StorageImage<Format>>,
+    pub noise_0_buffer : Arc<StorageImage<Format>>,
+    pub noise_1_buffer : Arc<StorageImage<Format>>,
+    pub noise_2_buffer : Arc<StorageImage<Format>>,
 
     pub pre_depth_buffer : Arc<StorageImage<Format>>,
     pub depth_buffer : Arc<StorageImage<Format>>,
@@ -86,7 +88,9 @@ impl GBuffer {
         let index_buffer                = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
         let light_index_buffer          = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
 
-        let rng_seed_buffer             = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let noise_0_buffer              = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let noise_1_buffer              = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
+        let noise_2_buffer              = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
 
         let material0_buffer            = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
         let material1_buffer            = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
@@ -136,7 +140,9 @@ impl GBuffer {
             temp_buffers,
             index_buffer,
             light_index_buffer,
-            rng_seed_buffer,
+            noise_0_buffer,
+            noise_1_buffer,
+            noise_2_buffer,
             pre_depth_buffer,
             depth_buffer,
             position0_buffer,

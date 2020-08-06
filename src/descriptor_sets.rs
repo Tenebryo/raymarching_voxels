@@ -15,11 +15,13 @@ pub struct DescriptorSets {
     pub pre_trace_set         : Arc<dyn DescriptorSet + Send + Sync>,
     pub light_bounce_set      : Arc<dyn DescriptorSet + Send + Sync>,
     pub light_combine_set     : Arc<dyn DescriptorSet + Send + Sync>,
+    pub apply_texture_set     : Arc<dyn DescriptorSet + Send + Sync>,
     pub postprocess_set       : Arc<dyn DescriptorSet + Send + Sync>,
     pub atrous_set_a          : Arc<dyn DescriptorSet + Send + Sync>,
     pub atrous_set_b          : Arc<dyn DescriptorSet + Send + Sync>,
     pub light_occlude_set_0   : Arc<dyn DescriptorSet + Send + Sync>,
     pub light_occlude_set_1   : Arc<dyn DescriptorSet + Send + Sync>,
+    pub sample_decay_set      : Arc<dyn DescriptorSet + Send + Sync>,
 }
 
 impl DescriptorSets {
@@ -49,6 +51,12 @@ impl DescriptorSets {
             .build().unwrap()
         );
 
+        let sample_decay_layout = pipeline.sample_decay.layout().descriptor_set_layout(0).unwrap();
+        let sample_decay_set = Arc::new(PersistentDescriptorSet::start(sample_decay_layout.clone())
+            .add_image(gbuffer.reprojected_cnt_buffer.clone()).unwrap()
+            .build().unwrap()
+        );
+
         let intersect_layout = pipeline.intersect.layout().descriptor_set_layout(0).unwrap();
         let intersect_set = Arc::new(PersistentDescriptorSet::start(intersect_layout.clone())
             // initial depth buffer
@@ -62,7 +70,9 @@ impl DescriptorSets {
             // material buffer
             .add_image(gbuffer.material0_buffer.clone()).unwrap()
             // random seed buffer
-            .add_image(gbuffer.rng_seed_buffer.clone()).unwrap()
+            .add_image(gbuffer.noise_0_buffer.clone()).unwrap()
+            .add_image(gbuffer.noise_1_buffer.clone()).unwrap()
+            .add_image(gbuffer.noise_2_buffer.clone()).unwrap()
             .add_sampled_image(dbuffer.blue_noise_tex.clone(), dbuffer.nst_sampler.clone()).unwrap()
             .add_image(gbuffer.iteration_count_buffer.clone()).unwrap()
             .add_image(gbuffer.stratum_index_buffer.clone()).unwrap()
@@ -98,7 +108,9 @@ impl DescriptorSets {
             .add_image(gbuffer.material0_buffer.clone()).unwrap()
             .add_image(gbuffer.material1_buffer.clone()).unwrap()
             // random seed buffer
-            .add_image(gbuffer.rng_seed_buffer.clone()).unwrap()
+            .add_image(gbuffer.noise_0_buffer.clone()).unwrap()
+            .add_image(gbuffer.noise_1_buffer.clone()).unwrap()
+            .add_image(gbuffer.noise_2_buffer.clone()).unwrap()
             // light index buffer
             .add_image(gbuffer.light_index_buffer.clone()).unwrap()
             // light direction buffer
@@ -168,8 +180,6 @@ impl DescriptorSets {
             // material buffers
             .add_image(gbuffer.material0_buffer.clone()).unwrap()
             .add_image(gbuffer.material1_buffer.clone()).unwrap()
-            // random seed buffer
-            .add_image(gbuffer.rng_seed_buffer.clone()).unwrap()
             // light index buffer
             .add_image(gbuffer.light_index_buffer.clone()).unwrap()
             // light direction buffer
@@ -201,6 +211,7 @@ impl DescriptorSets {
             .add_image(gbuffer.postprocess_input_buffer.clone()).unwrap()
             .add_image(gbuffer.position0_buffer.clone()).unwrap()
             .add_image(gbuffer.normal0_buffer.clone()).unwrap()
+            .add_image(gbuffer.material0_buffer.clone()).unwrap()
             .add_image(gbuffer.prev_cnt_buffer.clone()).unwrap()
             .add_image(gbuffer.temp_buffers[0].clone()).unwrap()
             .build().unwrap()
@@ -209,10 +220,20 @@ impl DescriptorSets {
             .add_image(gbuffer.temp_buffers[0].clone()).unwrap()
             .add_image(gbuffer.position0_buffer.clone()).unwrap()
             .add_image(gbuffer.normal0_buffer.clone()).unwrap()
+            .add_image(gbuffer.material0_buffer.clone()).unwrap()
             .add_image(gbuffer.prev_cnt_buffer.clone()).unwrap()
             .add_image(gbuffer.postprocess_input_buffer.clone()).unwrap()
             .build().unwrap()
         );
+
+        let apply_texture_layout = pipeline.apply_texture.layout().descriptor_set_layout(0).unwrap();
+        let apply_texture_set = Arc::new(PersistentDescriptorSet::start(apply_texture_layout.clone())
+            .add_image(gbuffer.postprocess_input_buffer.clone()).unwrap()
+            .add_image(gbuffer.material0_buffer.clone()).unwrap()
+            .add_buffer(dbuffer.material_buffer.clone()).unwrap()
+            .build().unwrap()
+        );
+
 
         let postprocess_layout = pipeline.postprocess.layout().descriptor_set_layout(0).unwrap();
         let postprocess_set = Arc::new(PersistentDescriptorSet::start(postprocess_layout.clone())
@@ -229,11 +250,13 @@ impl DescriptorSets {
             pre_trace_set,
             light_bounce_set,
             light_combine_set,
+            apply_texture_set,
             postprocess_set,
             atrous_set_a,
             atrous_set_b,
             light_occlude_set_0,
             light_occlude_set_1,
+            sample_decay_set,
         }
     }
 }

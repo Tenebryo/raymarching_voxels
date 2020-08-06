@@ -3,7 +3,7 @@
 
 layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
 
-layout(rg8ui, binding = 0) readonly uniform uimage2D stratum_pix_buf;
+layout(rg8ui,   binding = 0) readonly uniform uimage2D stratum_pix_buf;
 layout(rgba32f, binding = 1) readonly  uniform image2D in_buf;
 layout(rgba32f, binding = 2) writeonly uniform image2D out_buf;
 

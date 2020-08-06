@@ -297,6 +297,10 @@ bool voxel_march(vec3 o, vec3 d, uint max_depth, float max_dist, out float dist,
     float tstack[MAX_DAG_DEPTH];
     uint dmask = 0;
 
+    d.x = d.x == 0.0 ? 1e-6 : d.x;
+    d.y = d.y == 0.0 ? 1e-6 : d.y;
+    d.z = d.z == 0.0 ? 1e-6 : d.z;
+
     vec3 ds = sign(d);
 
     d *= ds;

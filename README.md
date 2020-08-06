@@ -14,6 +14,7 @@ These screenshots show the types of images the renderer can currently produce un
 
 On a RTX 2070 Super, the raycasting shaders can cast ~200M Mrays/s, depending on geometry, which corresponds to around 20 fps when computing lighting for every pixel.
 I plan on making a optimization pass later to improve this. 
+Some of the SVDAG papers I reference cited similar or better performance on GTX 680 GPUs, which means I still have a ways to go.
 
 ## Rendering Pipeline
 
@@ -34,13 +35,10 @@ The main path-tracing pipeline is implemented as compute shaders (detailed below
 
 ## TODO
 
- * Every other frame (or so), only compute lighting for pixels with sample counts under a certain threshold.
-
+ * Reproject second bounce lighting samples and other data for more light sample information.
  * Fully Implement A-SVGF
-
  * metropolis light transport for faster convergence
-
- * maybe implement some form of DLSS
+ * maybe implement some form of (jank) DLSS
 
 ## References
 

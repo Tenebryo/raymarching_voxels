@@ -35,3 +35,5 @@ image = "0.23.8"
 imgui = "0.4.0"
 imgui-winit-support = "0.4.0"
 imgui-vulkano-renderer = {path = "../imgui-vulkano-renderer"}
+pbr = "1.0"
+noise = "0.6.0"

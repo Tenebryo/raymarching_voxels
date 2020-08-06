@@ -1,0 +1,63 @@
+#version 450
+
+layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
+
+
+struct Material {
+    uint brdf;
+    vec3 albedo;
+    float transparency;
+    vec3 emission;
+    uint flags;
+    float roughness;
+    float metalness;
+};
+
+layout(rgba32f, binding = 0) uniform image2D light_buf;
+layout(r32ui, binding = 1) readonly uniform uimage2D material_buf;
+layout(binding = 2) buffer MaterialBlock {
+    Material materials[];
+};
+
+const uint SIZE = 9;
+
+// sigma = 1
+const float KERNEL[SIZE] = {
+    0.0556197, 0.124599, 0.0556197,
+    0.124599, 0.279126, 0.124599,
+    0.0556197, 0.124599, 0.0556197
+};
+
+// sigma = 2
+// const float KERNEL[SIZE] = {
+//     0.100268, 0.116115, 0.100268, 
+//     0.116115, 0.134467, 0.116115, 
+//     0.100268, 0.116115, 0.100268
+// };
+
+const ivec2 OFFSET[SIZE] = {
+    ivec2(-1, -1), ivec2( 0, -1), ivec2( 1, -1),
+    ivec2(-1,  0), ivec2( 0,  0), ivec2( 1,  0),
+    ivec2(-1,  1), ivec2( 0,  1), ivec2( 1,  1)
+};
+
+/// implement the edge-aware A-Trous Wavelet filtering based on
+/// https://jo.dreggn.org/home/2010_atrous.pdf
+void main() {
+    ivec2 idx = ivec2(
+        gl_GlobalInvocationID.x,
+        gl_GlobalInvocationID.y
+    );
+
+    ivec2 size = imageSize(light_buf);
+
+    if (idx.x < size.x && idx.y < size.y) {
+        uint m = imageLoad(material_buf, idx).r;
+        if (m != 0) {
+            Material m = materials[m];
+            vec4 light = imageLoad(light_buf, idx);
+            light.rgb *= m.albedo;
+            imageStore(light_buf, idx, light);
+        }
+    }
+}

@@ -68,6 +68,25 @@ use crossterm::{
     cursor::MoveUp
 };
 
+
+fn create_dag_sphere(depth : usize, c : Vector3<f32>, r : f32) -> vox::VoxelChunk {
+    vox::VoxelChunk::from_intersection_test(depth, |v, s| {
+
+        let mut sq_dist = 0.0;
+
+        if c.x < v.x - s { sq_dist += (v.x - s - c.x).powi(2); }
+        if c.x > v.x + s { sq_dist += (v.x + s - c.x).powi(2); }
+        
+        if c.y < v.y - s { sq_dist += (v.y - s - c.y).powi(2); }
+        if c.y > v.y + s { sq_dist += (v.y + s - c.y).powi(2); }
+        
+        if c.z < v.z - s { sq_dist += (v.z - s - c.z).powi(2); }
+        if c.z > v.z + s { sq_dist += (v.z + s - c.z).powi(2); }
+
+        sq_dist < r * r
+    })
+}
+
 fn main() {
 
     let init_start = Instant::now();
@@ -90,28 +109,37 @@ fn main() {
     let event_loop = EventLoop::new();
     let surface = WindowBuilder::new()
         .with_title("Voxel Renderer")
-        // .with_maximized(true)
+        .with_maximized(true)
         .build_vk_surface(&event_loop, instance.clone()).unwrap();
 
-    // surface.window().set_maximized(true);
+    surface.window().set_maximized(true);
 
-    let compute_queue_family = physical.queue_families().find(|&q| q.supports_compute()).unwrap();
+    let compute_graphics_queue_family = physical.queue_families()
+        .find(|&q| 
+            q.supports_compute() && 
+            q.supports_graphics() && 
+            surface.is_supported(q).unwrap_or(false)
+        ).unwrap();
+    let compute_queue_family = physical.queue_families()
+        .find(|&q| 
+            q.supports_compute()
+        ).unwrap();
     // We take the first queue that supports drawing to our window.
-    let graphics_queue_family = physical.queue_families().find(|&q| q.supports_graphics() && surface.is_supported(q).unwrap_or(false)).unwrap();
+    // let graphics_queue_family = physical.queue_families().find(|&q| q.supports_graphics() && surface.is_supported(q).unwrap_or(false)).unwrap();
     // get the a transfer queue family. This will be used to transfer voxel data.
-    let transfer_queue_family = physical.queue_families().find(|&q| q.explicitly_supports_transfers()).unwrap();
+    // let transfer_queue_family = physical.queue_families().find(|&q| q.explicitly_supports_transfers()).unwrap();
 
     // Now initializing the device.
     let (device, mut queues) = Device::new(physical, physical.supported_features(),
         &DeviceExtensions{khr_swapchain: true, khr_storage_buffer_storage_class:true, ..DeviceExtensions::none()},
-        [(compute_queue_family, 0.5), (graphics_queue_family, 0.5), (transfer_queue_family, 0.25)].iter().cloned()).unwrap();
+        [(compute_graphics_queue_family, 0.5), (compute_queue_family, 0.5)].iter().cloned()).unwrap();
 
     // Since we can request multiple queues, the `queues` variable is in fact an iterator. In this
     // example we use only one queue, so we just retrieve the first and only element of the
     // iterator and throw it away.
 
+    let render_queue = queues.next().unwrap();
     let compute_queue = queues.next().unwrap();
-    let graphics_queue = queues.next().unwrap();
 
     println!("Device initialized");
     
@@ -164,7 +192,7 @@ fn main() {
         let dimensions: [u32; 2] = surface.window().inner_size().into();
 
         Swapchain::new(device.clone(), surface.clone(), caps.min_image_count, format,
-            dimensions, 1, usage, &graphics_queue, SurfaceTransform::Identity, alpha,
+            dimensions, 1, usage, &compute_queue, SurfaceTransform::Identity, alpha,
             PresentMode::Fifo, FullscreenExclusive::Default, true, ColorSpace::SrgbNonLinear).unwrap()
 
     };
@@ -205,7 +233,7 @@ fn main() {
         },
     ]);
 
-    let mut imgui_renderer = Renderer::init(&mut imgui, device.clone(), compute_queue.clone(), swapchain_format).unwrap();
+    let mut imgui_renderer = Renderer::init(&mut imgui, device.clone(), render_queue.clone(), swapchain_format).unwrap();
 
     println!("ImGui Context and Renderer Initialized");
 
@@ -311,7 +339,7 @@ fn main() {
             image_data.iter().cloned(),
             dimensions,
             Format::R8G8B8A8Srgb,
-            compute_queue.clone()
+            render_queue.clone()
         ).unwrap()
     };
     
@@ -344,7 +372,7 @@ fn main() {
             height : dim.height,
         };
 
-        let (tex, fut) = ImmutableImage::from_iter(rgba32f_data.iter().cloned(), dim, Format::R32G32B32A32Sfloat, compute_queue.clone()).unwrap();
+        let (tex, fut) = ImmutableImage::from_iter(rgba32f_data.iter().cloned(), dim, Format::R32G32B32A32Sfloat, render_queue.clone()).unwrap();
 
         (tex, fut.join(load_future))
     };
@@ -368,18 +396,21 @@ fn main() {
     let mut adaptation = 2.0;
     let mut exposure = 1.0;
     let mut reprojection_miss_ratio = 0.02;
-    let mut sample_cutoff = 512;
-    let mut atrous_col_weight = 0.1; // 0.1;
+    let mut sample_cutoff = 32;
+    let mut atrous_col_weight = 0.8; // 0.1;
     let mut atrous_nrm_weight = 0.0001; // 32.0;
-    let mut atrous_pos_weight = 0.0001; // 16.0;
-    let mut atrous_iterations = 2; // 16.0;
-    let mut atrous_enable = false; // 16.0;
+    let mut atrous_pos_weight = 0.8; // 16.0;
+    let mut atrous_iterations = 6; // 16.0;
+    let mut atrous_enable = true; // 16.0;
+    let mut sample_decay_patch_size = 3u32;
 
     let mut ui_enabled = true;
     let mut ui_wants_mouse_capture = false;
     let mut ui_wants_keyboard_capture = false;
     let mut render_new_frame = true;
     let mut render_single_frame = false;
+    let mut last_mouse_pos = (0.0, 0.0);
+    let mut mouse_hide = false;
 
     let mut input = WinitInputHelper::new();
 
@@ -401,8 +432,12 @@ fn main() {
         max_depth : 16,
         render_dist: 100.0,
         frame_idx : 0,
-        noise_idx : [0,0,0,0],
+        noise_0 : [0,0,0],
+        noise_1 : [0,0,0],
+        noise_2 : [0,0,0],
         noise_frames : 64,
+        _dummy0 : [0; 4],
+        _dummy1 : [0; 4],
     };
 
     //*************************************************************************************************************************************
@@ -412,16 +447,20 @@ fn main() {
     // parse voxel goemetry data
     let mut svdag_geometry_data = {
 
-        // let chunk_bytes_sponza = std::fs::read("./data/dag/sponza.svdag").unwrap();
-        let chunk_bytes_sponza = std::fs::read("./data/dag/sponza_tex.svdag").unwrap();
-        // let chunk_bytes_sponza = std::fs::read("./data/dag/sponza_mats.svdag").unwrap();
-        // let chunk_bytes_sibenik = std::fs::read("./data/dag/sibenik_mats.svdag").unwrap();
+        // let chunk_bytes = std::fs::read("./data/dag/sponza.svdag").unwrap();
+        // let chunk_bytes = std::fs::read("./data/dag/sponza_tex.svdag").unwrap();
+        // let chunk_bytes = std::fs::read("./data/dag/sphere_1k.svdag").unwrap();
+        let chunk_bytes = std::fs::read("./data/dag/sponza_tex_1k.svdag").unwrap();
+        // let chunk_bytes = std::fs::read("./data/dag/sponza_tex_16k.svdag").unwrap();
+        // let chunk_bytes = std::fs::read("./data/dag/sponza_mats.svdag").unwrap();
+        // let chunk_bytes = std::fs::read("./data/dag/sibenik_mats.svdag").unwrap();
         
-        bincode::deserialize::<vox::VoxelChunk>(&chunk_bytes_sponza).expect("Deserialization Failed")
-        // bincode::deserialize::<vox::VoxelChunk>(&chunk_bytes_sibenik).expect("Deserialization Failed")
+        bincode::deserialize::<vox::VoxelChunk>(&chunk_bytes).expect("Deserialization Failed")
     };
     
     svdag_geometry_data.calculate_lod_materials();
+
+    let dag_buffer_start = Instant::now();
 
     // load the voxel data onto the GPU
     let svdag_geometry_buffer = {
@@ -433,7 +472,7 @@ fn main() {
     };
 
 
-    println!("Voxel Data initialized");
+    println!("Voxel Data initialized ({:?})", dag_buffer_start.elapsed());
 
     // create a list of point lights to render
     let point_light_buffer = {
@@ -447,14 +486,22 @@ fn main() {
             //     color : [1.0, 1.0, 1.0],
             //     radius : 0.005,
             // },
-            PointLight {
-                position : [0.5, 0.3, 0.3],
-                power : 0.01,
-                color : [1.0, 1.0, 1.0],
-                radius : 0.02,
-                max_radiance : 10.0,
-                _dummy0 : [0;12],
-            },
+            // PointLight {
+            //     position : [0.2, 0.12, 0.3],
+            //     power : 0.006,
+            //     color : [1.0, 1.0, 1.0],
+            //     radius : 0.02,
+            //     max_radiance : 5.0,
+            //     _dummy0 : [0;12],
+            // },
+            // PointLight {
+            //     position : [0.5, 0.3, 0.3],
+            //     power : 0.01,
+            //     color : [1.0, 1.0, 1.0],
+            //     radius : 0.02,
+            //     max_radiance : 10.0,
+            //     _dummy0 : [0;12],
+            // },
             PointLight {
                 position : [0.19, 0.125, 0.2],
                 power : 0.002,
@@ -497,7 +544,7 @@ fn main() {
 
         let lights = [
             DirectionalLight {
-                direction : [-0.0001, -1.0, -0.0001],
+                direction : [0.2, -1.0, 0.2],
                 color : [1.0; 3],
                 noise_scale : 0.2,
                 _dummy0 : [0;4],
@@ -559,7 +606,9 @@ fn main() {
         // CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), false, materials.iter().cloned()).unwrap()
 
 
-        let material_bytes = std::fs::read("./data/dag/sponza_tex.mats")
+        let material_bytes = std::fs::read("./data/dag/sponza_tex_1k.mats")
+        // let material_bytes = std::fs::read("./data/dag/sponza_tex_16k.mats")
+        // let material_bytes = std::fs::read("./data/dag/sponza_tex.mats")
         // let material_bytes = std::fs::read("./data/dag/sponza_mats.mats")
         // let material_bytes = std::fs::read("./data/dag/sibenik_mats.mats")
             .expect("failed to read material file");
@@ -588,7 +637,7 @@ fn main() {
     
     println!("Material Data initialized");
 
-    let dbuffer = dbuffer::DBuffer {
+    let mut dbuffer = dbuffer::DBuffer {
         svdag_geometry_buffer    : svdag_geometry_buffer.clone(),
         svdag_material_buffer    : svdag_material_buffer.clone(),
         directional_light_buffer : directional_light_buffer.clone(),
@@ -640,7 +689,6 @@ fn main() {
             Event::MainEventsCleared => {
             }
             Event::RedrawEventsCleared => {
-
                 // start FPS sample
                 fps.start_sample();
                 
@@ -667,7 +715,7 @@ fn main() {
 
                     // re-allocate buffer images
 
-                    gbuffer = GBuffer::new_buffers(device.clone(), compute_queue.family(), width, height, num_temp_buffers, stratum_size);
+                    gbuffer = GBuffer::new_buffers(device.clone(), render_queue.family(), width, height, num_temp_buffers, stratum_size);
                     desc_sets = descriptor_sets::DescriptorSets::new(&pipeline, &gbuffer, &dbuffer);
 
                     recreate_swapchain = false;
@@ -748,6 +796,15 @@ fn main() {
                                 .step(1).step_fast(10)
                                 .auto_select_all(true)
                                 .build();
+                            
+                            let mut sdps = sample_decay_patch_size as i32;
+
+                            imgui::InputInt::new(&ui, im_str!("Sample Decay Patch Size"), &mut sdps)
+                                .step(1)
+                                .auto_select_all(true)
+                                .build();
+
+                            sample_decay_patch_size = u32::max(2, sdps as u32);
 
                             sample_cutoff = sample_cutoff.abs();
 
@@ -783,7 +840,6 @@ fn main() {
                         });
                 }
 
-
                 let _time = p_start.elapsed().as_secs_f32();
                 
                 // Push Constant Construction @PC
@@ -792,8 +848,17 @@ fn main() {
                 intersect_pc.camera_origin = [position.x, position.y, position.z];
                 intersect_pc.camera_up = [up.x, up.y, up.z];
                 intersect_pc.frame_idx += 1;
-                intersect_pc.noise_idx = [
+                intersect_pc.noise_0 = [
                     thread_rng().gen_range(0,intersect_pc.noise_frames),
+                    thread_rng().gen_range(0,intersect_pc.noise_frames),
+                    thread_rng().gen_range(0,intersect_pc.noise_frames)
+                ];
+                intersect_pc.noise_1 = [
+                    thread_rng().gen_range(0,intersect_pc.noise_frames),
+                    thread_rng().gen_range(0,intersect_pc.noise_frames),
+                    thread_rng().gen_range(0,intersect_pc.noise_frames)
+                ];
+                intersect_pc.noise_2 = [
                     thread_rng().gen_range(0,intersect_pc.noise_frames),
                     thread_rng().gen_range(0,intersect_pc.noise_frames),
                     thread_rng().gen_range(0,intersect_pc.noise_frames)
@@ -827,8 +892,8 @@ fn main() {
                     camera_forward : pre_trace_pc.camera_forward,
                     camera_up : pre_trace_pc.camera_up,
                     camera_origin : pre_trace_pc.camera_origin,
-                    n_directional_lights : 0,
-                    n_point_lights : 1,
+                    n_directional_lights : 1,
+                    n_point_lights : 4,
                     n_spot_lights : 0,
                     render_dist : intersect_pc.render_dist,
                     max_depth : intersect_pc.max_depth,
@@ -861,10 +926,20 @@ fn main() {
                 };
 
                 let atrous_pc = shaders::AtrousPushConstantData {
+                    camera_origin : intersect_pc.camera_origin,
                     stride : 1,
                     col_weight : atrous_col_weight as f32,
                     nrm_weight : atrous_nrm_weight as f32,
                     pos_weight : atrous_pos_weight as f32,
+                };
+                
+                let sample_decay_pc = shaders::SampleDecayPushConstantData {
+                    offset : [
+                        thread_rng().gen_range(0i32, sample_decay_patch_size as i32),
+                        thread_rng().gen_range(0i32, sample_decay_patch_size as i32)
+                    ],
+                    patch_size : sample_decay_patch_size,
+                    min_samples : sample_cutoff as u32 / 4,
                 };
 
                 let dt = {
@@ -892,7 +967,7 @@ fn main() {
                 let block_dim_x = (width - 1) / local_size_x + 1;
                 let block_dim_y = (height - 1) / local_size_y + 1;
 
-                let mut render_command_buffer_builder = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), compute_queue.family()).unwrap();
+                let mut render_command_buffer_builder = AutoCommandBufferBuilder::primary_one_time_submit(device.clone(), render_queue.family()).unwrap();
 
                 if render_new_frame {
 
@@ -911,6 +986,8 @@ fn main() {
                         .dispatch([block_dim_x, block_dim_y, 1], pipeline.stratified_sample.clone(), desc_sets.stratified_sample_set.clone(), stratified_sample_pc).unwrap()
                         // reproject previous frame
                         .dispatch([block_dim_x, block_dim_y, 1], pipeline.reproject.clone(), desc_sets.reproject_set.clone(), reproject_pc).unwrap()
+                        // decay some reprojected samples
+                        .dispatch([block_dim_x / sample_decay_patch_size, block_dim_y / sample_decay_patch_size, 1], pipeline.sample_decay.clone(), desc_sets.sample_decay_set.clone(), sample_decay_pc).unwrap()
                         // lighting calculations
                         .dispatch([block_dim_x, block_dim_y, 1], pipeline.light_bounce.clone(), desc_sets.light_bounce_set.clone(), light_bounce_pc).unwrap()
                         .dispatch([block_dim_x, block_dim_y, 1], pipeline.light_occlude.clone(), desc_sets.light_occlude_set_0.clone(), light_occlude_pc_a).unwrap()
@@ -935,10 +1012,13 @@ fn main() {
                         }
                     }
                     
+                    render_command_buffer_builder
+                        .dispatch([block_dim_x, block_dim_y, 1], pipeline.apply_texture.clone(), desc_sets.apply_texture_set.clone(), ()).unwrap();
+
                     // compute average luminance by successively blit-ing down to a single pixel
                     render_command_buffer_builder
                         .blit_image(
-                            gbuffer.hdr_light_buffer.clone(), [0,0,0], [width as i32, height as i32, 1], 0, 0, 
+                            gbuffer.postprocess_input_buffer.clone(), [0,0,0], [width as i32, height as i32, 1], 0, 0, 
                             gbuffer.luminance_buffer.clone(), [0,0,0], [32,32,1], 0, 0, 1, Filter::Linear
                         ).unwrap()
                         .blit_image(
@@ -1004,11 +1084,11 @@ fn main() {
                 let render_command_buffer = render_command_buffer_builder.build().unwrap();
 
                 // build ui command buffer
-                let mut ui_cmd_buf_builder = AutoCommandBufferBuilder::new(device.clone(), compute_queue.family()).unwrap();
+                let mut ui_cmd_buf_builder = AutoCommandBufferBuilder::new(device.clone(), render_queue.family()).unwrap();
                 
                 platform.prepare_render(&ui, &surface.window());
                 let draw_data = ui.render();
-                imgui_renderer.draw_commands(&mut ui_cmd_buf_builder, compute_queue.clone(), swapchain_images[image_num].clone(), draw_data).unwrap();
+                imgui_renderer.draw_commands(&mut ui_cmd_buf_builder, render_queue.clone(), swapchain_images[image_num].clone(), draw_data).unwrap();
                 
                 let ui_cmd_buf = ui_cmd_buf_builder.build().unwrap();
                 
@@ -1018,10 +1098,10 @@ fn main() {
                 let future = previous_frame_end.take().unwrap()
                     .join(acquire_future)
                     // rendering is done in a series of compute shader commands
-                    .then_execute(compute_queue.clone(), render_command_buffer).unwrap()
-                    .then_execute(compute_queue.clone(), ui_cmd_buf).unwrap()
+                    .then_execute(render_queue.clone(), render_command_buffer).unwrap()
+                    .then_execute(render_queue.clone(), ui_cmd_buf).unwrap()
                     // present the frame when rendering is complete
-                    .then_swapchain_present(compute_queue.clone(), swapchain.clone(), image_num)
+                    .then_swapchain_present(render_queue.clone(), swapchain.clone(), image_num)
                     .then_signal_fence_and_flush();
                 
 
@@ -1087,28 +1167,67 @@ fn main() {
 
             position += speed * dt *  movement;
 
-            if let Some((_mx, _my)) = input.mouse() {
+            if let Some((mut mx, mut my)) = input.mouse() {
 
-                let (dx, dy) = input.mouse_diff();
+                let (dx, dy) = (mx - last_mouse_pos.0, my - last_mouse_pos.1);
+                // let (dx, dy) = input.mouse_diff();
                 // let mx = mx - surface_width as f32 / 2.0;
                 // let my = my - surface_height as f32 / 2.0;
 
-                if input.mouse_held(0) && !ui_wants_mouse_capture && !render_single_frame {
+                if !ui_wants_mouse_capture && !render_single_frame {
 
-                    pitch += dy / 270.0;
-                    yaw   += dx / 270.0;
+                    if input.mouse_held(0) {
 
-                    use std::f32::consts::PI;
+                        pitch += dy / 270.0;
+                        yaw   += dx / 270.0;
 
-                    if pitch < - PI / 2.0 { pitch = - PI / 2.0; }
-                    if pitch > PI / 2.0 {pitch = PI / 2.0; }
+                        use std::f32::consts::PI;
 
-                    // forward = Quaternion::from_sv(yaw, Vector3::unit_y()) * (Quaternion::from_sv(pitch, Vector3::unit_x()) * Vector3::unit_z());
-                    let rot_p = Quaternion::from_angle_x(Rad(pitch));
-                    let rot_y = Quaternion::from_angle_y(Rad(-yaw));
-                    forward = rot_y.rotate_vector(rot_p.rotate_vector(Vector3::unit_z()));
-                    forward = forward.normalize();
+                        if pitch < - PI / 2.0 { pitch = - PI / 2.0; }
+                        if pitch > PI / 2.0 {pitch = PI / 2.0; }
+
+                        // forward = Quaternion::from_sv(yaw, Vector3::unit_y()) * (Quaternion::from_sv(pitch, Vector3::unit_x()) * Vector3::unit_z());
+                        let rot_p = Quaternion::from_angle_x(Rad(pitch));
+                        let rot_y = Quaternion::from_angle_y(Rad(-yaw));
+                        forward = rot_y.rotate_vector(rot_p.rotate_vector(Vector3::unit_z()));
+                        forward = forward.normalize();
+                        surface.window().set_cursor_position(winit::dpi::PhysicalPosition::new(width / 2, height / 2)).unwrap();
+                        
+                        mx = (width / 2) as f32;
+                        my = (height / 2) as f32;
+
+                    }
                 }
+
+                
+                if input.mouse_pressed(1) {
+                    
+                    let start = Instant::now();
+                    
+                    let r = svdag_geometry_data.raycast(position, forward, 16, 100.0);
+                    
+                    if r.hit {
+
+                        let center = position + forward * r.dist;
+
+                        let sphere = create_dag_sphere(10, center, 0.02);
+                        if input.key_held(VirtualKeyCode::LControl) {
+                            svdag_geometry_data.combine(&sphere, false, false);
+                        } else {
+                            svdag_geometry_data.subtract(&sphere, false);
+                        }
+                        let svdag_geometry_buffer = {
+                            CpuAccessibleBuffer::<[vox::VChildDescriptor]>::from_iter(device.clone(), BufferUsage::all(), false, svdag_geometry_data.voxels.iter().cloned()).unwrap()
+                        };
+
+                        dbuffer.svdag_geometry_buffer = svdag_geometry_buffer;
+                        desc_sets = descriptor_sets::DescriptorSets::new(&pipeline, &gbuffer, &dbuffer);
+
+                        println!("Modification Took: {:?}", start.elapsed());
+                    }
+                }
+
+                last_mouse_pos = (mx, my);
             }
 
             if input.scroll_diff() < 0.0 && intersect_pc.max_depth > 0 {

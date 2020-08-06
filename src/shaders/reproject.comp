@@ -124,18 +124,20 @@ void main() {
 
         ivec2 nidx = nsc + OFFSETS[min_i];
 
+        bool index_out_of_bounds = nidx.x < 0 || nidx.x >= size.x || nidx.y < 0 || nidx.y >= size.y;
+
         // load from previous frame
         vec4 pos = imageLoad(prev_pos_buf, nidx);
         vec4 col = imageLoad(prev_col_buf, nidx);
-        uint cnt = max(1, int(imageLoad(prev_cnt_buf, nidx).r) - COUNT_PENALTIES[min_i]);
+        uint cnt = max(1, int(imageLoad(prev_cnt_buf, nidx).r));
         
-        if (min_i != 4) {
-            cnt -= 2;
+        if (min_i != 4 && cnt > 16) {
+            cnt -= 4;
         }
         
         // check to see if the reprojected position is accurate
         float dist = distance(pos.xyz, p.xyz);
-        if (dist > reprojection_miss_ratio * depth) {
+        if (dist > reprojection_miss_ratio * depth || index_out_of_bounds) {
             // reject the reprojection if there is significant deviation from current frame
             col = vec4(0, 0, 0, 0);
             pos = vec4(0, 0, 0, 0);
@@ -147,6 +149,6 @@ void main() {
         imageStore(reprojected_col_buf, idx, col);
         imageStore(reprojected_pos_buf, idx, pos);
         imageStore(reprojected_cnt_buf, idx, uvec4(cnt) + 1);
-        imageStore(reprojection_dist_buf, idx, vec4(reprojection_miss_ratio, dist, depth, min_i));
+        imageStore(reprojection_dist_buf, idx, vec4(dist, depth, reprojection_miss_ratio * depth, min_i));
     }
 }

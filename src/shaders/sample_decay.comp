@@ -1,0 +1,33 @@
+#version 450
+
+
+layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
+
+layout(r8ui,   binding = 0) uniform uimage2D sample_count_buf;
+
+layout(push_constant) uniform SampleDecayPushConstantData {
+    ivec2 offset;
+    uint patch_size;
+    uint min_samples;
+};
+
+/// Sample one pixel from each of the 
+void main() {
+
+    ivec2 idx = int(patch_size) * ivec2(
+        gl_GlobalInvocationID.x,
+        gl_GlobalInvocationID.y
+    ) + offset;
+
+    ivec2 size = imageSize(sample_count_buf);
+
+    if (idx.x < size.x && idx.y < size.y) {
+        uint count = imageLoad(sample_count_buf, idx).r;
+        
+        if (count > min_samples) {
+            count -= 1;
+        }
+
+        imageStore(sample_count_buf, idx, uvec4(max(1, count)));
+    }
+}
