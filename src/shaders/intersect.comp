@@ -17,7 +17,7 @@ layout(rgba32ui, binding = 9) uniform uimage2D iteration_buf;   // random noise
 layout(rg32ui,   binding = 10) uniform uimage2D stratum_buf;   // random noise
 
 #define VOXEL_BINDING_OFFSET 11
-#include "voxel.glsl"
+#include "voxel.comp"
 
 layout(push_constant) uniform IntersectPushConstants {
     vec3 camera_origin;

@@ -1,0 +1,121 @@
+#version 450
+///functions that compute a single sample of the lighting function for a pixel
+/// Implements bidirectional path tracing with importance sampling
+
+
+// specialization constants for the local sizes
+layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
+
+#define PI 3.141592653
+
+struct Material {
+    uint brdf;
+    vec3 albedo;
+    float transparency;
+    vec3 emission;
+    uint flags;
+    float roughness;
+    float metalness;
+};
+
+//material information
+layout(binding = 0) readonly buffer MaterialData { Material materials[]; };
+layout(rgba32f, binding = 1) readonly uniform image2D pos_buf;
+layout(rgba32f, binding = 2) readonly uniform image2D nrm_buf;
+layout(r32ui,   binding = 3) readonly uniform uimage2D mat_buf;
+layout(rgba32f, binding = 4) readonly uniform image2D noise_buf;
+layout(r32ui,   binding = 5) readonly uniform uimage2D cnt_buf;
+layout(rgba32f, binding = 6) writeonly uniform image2D direct_buf;
+layout(r32ui,   binding = 7) writeonly uniform uimage2D mask_buf;
+
+
+layout(push_constant) uniform PathBouncePushConstantData {
+    vec3 camera_origin;
+    vec3 camera_forward;
+    vec3 camera_up;
+    float render_dist;
+    uint sample_cutoff;
+};
+
+/// calculate the other incident direction from one incident vector and the half-angle vector
+///  * `o` : the given incident vector (normalized)
+///  * `h` : the half angle vector (normalized)
+vec3 calculate_incident_from_half_angle(vec3 o, vec3 h) {
+    vec3 prj = o - dot(h, o) * h;
+    return o - 2 * prj;
+}
+
+/// computes the theta and phi angles for an incident ray
+///  * `n` : the normal vector (normalized)
+///  * `p` : a parallel vector (normalized)
+///  * `i` : the incident vector (normalized)
+vec3 vector_from_incident_angles(vec3 n, vec3 p, float theta, float phi) {
+    vec3 q = cross(n, p);
+
+    float cos_theta = cos(theta);
+
+    return (sin(theta)) * n + (cos_theta * cos(phi)) * p + (cos_theta * sin(phi)) * q;
+}
+
+/// pick a point on a hemisphere
+/// r0 and r1 are two uniform random numbers in [0,1)
+vec2 sample_hemisphere(float r0, float r1) {
+    // return vec2(acos(r1), 2 * PI * r0);
+    return vec2(PI * r1 * 0.5, 2 * PI * r0);
+}
+
+vec2 sample_sphere(float r0, float r1) {
+    // return vec2(acos(r1), 2 * PI * r0);
+    return vec2(PI * r1, 2 * PI * r0);
+}
+
+
+const vec3 INCIDENCE_NORMAL_VECTORS[3] = {vec3(1,0,0), vec3(0,1,0), vec3(0,0,1)};
+
+/// do multiple importance path tracing with 
+void main() {
+    ivec2 idx = ivec2(
+        gl_GlobalInvocationID.x,
+        gl_GlobalInvocationID.y
+    );
+
+    ivec2 size = imageSize(pos_buf);
+
+    float aspect_ratio = float(size.x) / float(size.y);
+
+    if (idx.x < size.x && idx.y < size.y) {
+
+        uint  c = imageLoad(cnt_buf, idx).r;
+
+        uint mask = 1;
+
+        if (c > sample_cutoff) {
+            // skip lighting this pixel because it already has enough samples
+            mask = 0;
+        }
+
+        vec4  p = imageLoad(pos_buf, idx);
+        vec4  n = imageLoad(nrm_buf, idx);
+        uvec4 m = imageLoad(mat_buf, idx);
+        vec4 ns = imageLoad(noise_buf, idx);
+
+        vec3 out_0 = normalize(camera_origin - p.xyz);
+
+        vec4 direction = vec4(0);
+
+        if (p.w > 0.5) {
+            // sample 1 bounces from brdf (6 random numbers)
+
+            // slight offsets to avoid 0s in the direction
+            vec2 i_angles_0 = sample_hemisphere(ns.x + 1e-6, 0.99 * ns.y);
+            vec3 reflection_halfangle = vector_from_incident_angles(n.xyz, n.zxy, i_angles_0.x, i_angles_0.y);
+
+            reflection_halfangle = normalize(0.1 * n.xyz + reflection_halfangle);
+
+            direction = vec4(reflection_halfangle, render_dist);
+        }
+
+        imageStore(direct_buf,      idx, direction);
+        imageStore(mask_buf,        idx, uvec4(mask));
+    }
+}

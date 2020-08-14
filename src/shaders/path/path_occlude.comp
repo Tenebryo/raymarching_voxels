@@ -2,6 +2,8 @@
 ///functions that compute a single sample of the lighting function for a pixel
 /// Implements bidirectional path tracing with importance sampling
 
+// specialization constants for the local sizes
+layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
 
 #define PI 3.141592653
 
@@ -15,45 +17,25 @@ struct Material {
     float shininess;
 };
 
-//material information
-layout(binding = 0) readonly buffer MaterialData {
-    Material materials[];
-};
-
-// specialization constants for the local sizes
-layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
-// g-buffer information
-layout(rgba32f,  binding = 1) readonly uniform image2D position_buf;
-layout(rgba32f,  binding = 2) readonly uniform image2D ldir_buf;
-layout(rgba32f,  binding = 3) uniform image2D light_buf;
-layout(rgba32ui, binding = 4) uniform uimage2D iteration_buf;
-layout(r32ui,    binding = 5) readonly uniform uimage2D sample_mask_buf;
-
-
-#define TESTING_DEBUG 1
-
 // voxel geometry information and functions
-#define VOXEL_BINDING_OFFSET 6
-#include "voxel.comp"
+#define VOXEL_BINDING_OFFSET 0
+#include "../voxel.comp"
 
-layout(push_constant) uniform LightOccludePushConstantData {
+//material information
+layout(binding = 2) readonly buffer MaterialData { Material materials[]; };
+layout(rgba32f,  binding = 3) readonly uniform image2D position_buf;
+layout(rgba32f,  binding = 4) readonly uniform image2D ldir_buf;
+layout(r32ui,    binding = 5) readonly uniform uimage2D sample_mask_buf;
+layout(rgba32f,  binding = 6) uniform image2D light_buf;
+layout(rgba32ui, binding = 7) writeonly uniform uimage2D iteration_buf;
+
+layout(push_constant) uniform PathOccludePushConstantData {
     float render_dist;
     uint num_materials;
     uint max_depth;
-    uint bounce_idx;
 };
 
 const vec3 INCIDENCE_NORMAL_VECTORS[3] = {vec3(1,0,0), vec3(0,1,0), vec3(0,0,1)};
-
-const vec3 COLOR_WHEEL[7] = {
-    vec3(1,0,0),
-    vec3(0,1,0),
-    vec3(1,1,0),
-    vec3(0,1,1),
-    vec3(0,0,1),
-    vec3(1,1,1),
-    vec3(1,0,1)
-};
 
 /// cause indirect lighting to occlude if it intersects voxel geometry
 void main() {
@@ -66,8 +48,8 @@ void main() {
 
     if (idx.x < size.x && idx.y < size.y) {
 
-        vec4 pos = imageLoad(position_buf, idx);
-        vec4 ldd = imageLoad(ldir_buf, idx);
+        vec4 pos =  imageLoad(position_buf, idx);
+        vec4 ldd =  imageLoad(ldir_buf, idx);
         uint mask = imageLoad(sample_mask_buf, idx).r;
 
         vec3 p = pos.xyz;
@@ -87,7 +69,7 @@ void main() {
         uint iterations = 0;
         uint vid = 0;
 
-        float advance = 0.0001;
+        float advance = 1e-6;
 
         bool hit = voxel_march(p + dir * advance, dir, max_depth, ldist+0.001, dist, incidence, vid, material, ret_code, iterations);
 
@@ -105,17 +87,7 @@ void main() {
         }
 
         // otherwise, we keep the light value from the light, which was set from the bounce shader
-        // imageStore(light_buf, idx, vec4((hit ? vec3(0,1,0) : vec3(1,0,0)) * vec3(iterations), 1));
-        // imageStore(light_buf, idx, vec4(h * (p + dist * dir), iterations / 100.0));
         imageStore(light_buf, idx, light);
-
-        
-        uvec4 itervec = imageLoad(iteration_buf, idx);
-        if (bounce_idx == 0) {
-            itervec.z = iterations;
-        } else {
-            itervec.w = iterations;
-        }
-        imageStore(iteration_buf, idx, uvec4(itervec));
+        imageStore(iteration_buf, idx, uvec4(iterations));
     }
 }

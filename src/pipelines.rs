@@ -11,7 +11,6 @@ use std::sync::Arc;
 use crate::shaders;
 
 pub struct Pipelines {
-    pub _update           : Arc<ComputePipeline<PipelineLayout<shaders::update_cs::Layout>>>,
     pub _denoise          : Arc<ComputePipeline<PipelineLayout<shaders::denoise_cs::Layout>>>,
     pub reproject         : Arc<ComputePipeline<PipelineLayout<shaders::reproject_cs::Layout>>>,
     pub intersect         : Arc<ComputePipeline<PipelineLayout<shaders::intersect_cs::Layout>>>,
@@ -26,18 +25,14 @@ pub struct Pipelines {
     pub stratified_sample : Arc<ComputePipeline<PipelineLayout<shaders::stratified_sample_cs::Layout>>>,
     pub sample_decay      : Arc<ComputePipeline<PipelineLayout<shaders::sample_decay_cs::Layout>>>,
     pub ray_test          : Arc<ComputePipeline<PipelineLayout<shaders::ray_test_cs::Layout>>>,
+    pub raycast           : Arc<ComputePipeline<PipelineLayout<shaders::raycast_cs::Layout>>>,
+    pub path_bounce       : Arc<ComputePipeline<PipelineLayout<shaders::path_bounce_cs::Layout>>>,
+    pub path_light        : Arc<ComputePipeline<PipelineLayout<shaders::path_light_cs::Layout>>>,
+    pub path_occlude      : Arc<ComputePipeline<PipelineLayout<shaders::path_occlude_cs::Layout>>>,
 }
 
 impl Pipelines {
     pub fn new(device : Arc<Device>, local_size_x : u32, local_size_y : u32) -> Pipelines {
-        // build update compute pipeline
-        let _update = Arc::new({
-            // raytracing shader
-            use shaders::update_cs;
-
-            let shader = update_cs::Shader::load(device.clone()).unwrap();
-            ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap()
-        });
 
         // build denoise compute pipeline
         let _denoise = Arc::new({
@@ -220,8 +215,55 @@ impl Pipelines {
             ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
         });
 
+        let raycast = Arc::new({
+            use shaders::raycast_cs;
+
+            let spec_consts = raycast_cs::SpecializationConstants{
+                constant_1 : local_size_x,
+                constant_2 : local_size_y,
+            };
+
+            let shader = raycast_cs::Shader::load(device.clone()).unwrap();
+            ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
+        });
+
+        let path_bounce = Arc::new({
+            use shaders::path_bounce_cs;
+
+            let spec_consts = path_bounce_cs::SpecializationConstants{
+                constant_1 : local_size_x,
+                constant_2 : local_size_y,
+            };
+
+            let shader = path_bounce_cs::Shader::load(device.clone()).unwrap();
+            ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
+        });
+
+        let path_light = Arc::new({
+            use shaders::path_light_cs;
+
+            let spec_consts = path_light_cs::SpecializationConstants{
+                constant_1 : local_size_x,
+                constant_2 : local_size_y,
+            };
+
+            let shader = path_light_cs::Shader::load(device.clone()).unwrap();
+            ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
+        });
+
+        let path_occlude = Arc::new({
+            use shaders::path_occlude_cs;
+
+            let spec_consts = path_occlude_cs::SpecializationConstants{
+                constant_1 : local_size_x,
+                constant_2 : local_size_y,
+            };
+
+            let shader = path_occlude_cs::Shader::load(device.clone()).unwrap();
+            ComputePipeline::new(device.clone(), &shader.main_entry_point(), &spec_consts).unwrap()
+        });
+
         Pipelines {
-            _update,
             _denoise,
             reproject,
             intersect,
@@ -236,6 +278,10 @@ impl Pipelines {
             stratified_sample,
             sample_decay,
             ray_test,
+            raycast,
+            path_bounce,
+            path_light,
+            path_occlude,
         }
     }
 }

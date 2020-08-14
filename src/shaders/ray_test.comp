@@ -24,7 +24,7 @@ layout(binding = 0) buffer RayBlock {
 };
 
 #define VOXEL_BINDING_OFFSET 1
-#include "voxel.glsl"
+#include "voxel.comp"
 
 layout(push_constant) uniform RayTestPushConstants {
     uint request_count;

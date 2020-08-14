@@ -58,6 +58,10 @@ pub struct GBuffer {
     pub prev_swapchain : Arc<StorageImage<Format>>,
     
     pub iteration_count_buffer : Arc<StorageImage<Format>>,
+    pub iterations_intersect : Arc<StorageImage<Format>>,
+    pub iterations_bounce : Arc<StorageImage<Format>>,
+    pub iterations_occlude_0 : Arc<StorageImage<Format>>,
+    pub iterations_occlude_1 : Arc<StorageImage<Format>>,
 
     pub output_buffer : Arc<StorageImage<Format>>,
 
@@ -129,6 +133,10 @@ impl GBuffer {
         let postprocess_input_buffer    = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
         
         let iteration_count_buffer      = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Uint, [queue_family].iter().cloned()).unwrap();
+        let iterations_intersect        = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
+        let iterations_bounce           = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
+        let iterations_occlude_0        = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
+        let iterations_occlude_1        = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32Uint, [queue_family].iter().cloned()).unwrap();
 
         let prev_swapchain              = StorageImage::new(device.clone(), Dimensions::Dim2d{width, height}, Format::R32G32B32A32Sfloat, [queue_family].iter().cloned()).unwrap();
 
@@ -173,6 +181,10 @@ impl GBuffer {
             reprojected_cnt_buffer,
             postprocess_input_buffer,
             iteration_count_buffer,
+            iterations_intersect,
+            iterations_bounce,
+            iterations_occlude_0,
+            iterations_occlude_1,
             prev_swapchain,
             pre_trace_width,
             pre_trace_height,

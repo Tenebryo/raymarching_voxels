@@ -33,12 +33,25 @@ The main path-tracing pipeline is implemented as compute shaders (detailed below
 * Postprocessing: compute an autoexposure effect and map HDR light values to LDR.
 * Render 
 
+## Building
+
+As long as there is a Vulkan runtime on your system, all you should have to manually install is `shaderc`, which is required for `vulkano-shaders` to work.
+After that, `cargo build --release` should handle most of the work.
+
 ## TODO
 
- * Reproject second bounce lighting samples and other data for more light sample information.
- * Fully Implement A-SVGF
- * metropolis light transport for faster convergence
- * maybe implement some form of (jank) DLSS
+* Optimize raycasting and compute shaders
+  * Currently register file space seems to be an issue in some of the path tracing shaders.
+  * Improve cache efficiency (only so much one can do with trees/DAGs)
+* Reproject second bounce lighting samples and other data for more light sample information.
+* Fully Implement A-SVGF
+* metropolis light transport for faster convergence
+* maybe implement some form of (jank) DLSS
+* Improve material capabilities
+  * BRDF sampling (replace diffuse-only materials)
+  * Transparent materials
+    * Modify raycasting termination conditions
+    * Integrate over
 
 ## References
 
@@ -49,7 +62,6 @@ Voxels:
 * [Efficient Sparse Voxel Octrees](https://users.aalto.fi/~laines9/publications/laine2010i3d_paper.pdf)
 * [High Resolution Sparse Voxel DAGs](https://icg.gwu.edu/sites/g/files/zaxdzs1481/f/downloads/highResolutionSparseVoxelDAGs.pdf)
 * [Interactively Modifying Compressed Sparse Voxel Representations](https://graphics.tudelft.nl/Publications-new/2020/CBE20/ModifyingCompressedVoxels-main.pdf)
-
 
 Lighting:
 

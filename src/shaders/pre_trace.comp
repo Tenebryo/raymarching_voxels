@@ -5,7 +5,7 @@ layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
 layout(r32f, binding = 0) uniform image2D dImage;  // depth
 
 #define VOXEL_BINDING_OFFSET 1
-#include "voxel.glsl"
+#include "voxel.comp"
 
 layout(push_constant) uniform PreTracePushConstants {
     vec3 camera_origin;

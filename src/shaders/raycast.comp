@@ -1,0 +1,63 @@
+#version 450
+// specialization constants for the local sizes
+layout(local_size_x_id = 1, local_size_y_id = 2, local_size_z = 1) in;
+
+#define VOXEL_BINDING_OFFSET 0
+#include "voxel.comp"
+
+layout(rgba32f, binding = 2) readonly uniform image2D origin_buf;
+layout(rgba32f, binding = 3) readonly uniform image2D direct_buf;
+layout(rgba32f, binding = 4) writeonly uniform image2D   pos_buf;
+layout(rgba32f, binding = 5) writeonly uniform image2D   nrm_buf;
+layout(r32f,    binding = 6) writeonly uniform image2D   dst_buf;
+layout(r32ui,   binding = 7) writeonly uniform uimage2D  mat_buf;
+layout(r32ui,   binding = 8) writeonly uniform uimage2D  itr_buf;
+
+#define EPS (1e-6)
+
+layout(push_constant) uniform RayCastPushConstantData {
+    uint max_depth;
+};
+
+void main() {
+    ivec2 idx = ivec2(
+        gl_GlobalInvocationID.x,
+        gl_GlobalInvocationID.y
+    );
+
+    ivec2 size = imageSize(dst_buf);
+
+    if (idx.x < size.x && idx.y < size.y) {
+        vec4 origin    = imageLoad(origin_buf, idx);
+        vec4 direction = imageLoad(direct_buf, idx);
+        float max_dist = direction.w;
+
+        float dist;
+        uint vid;
+        uint incidence;
+        uint code;
+        uint iterations;
+        uint material;
+
+        if (max_dist > 0.0) {
+
+            bool hit = voxel_march(origin.xyz + EPS * direction.xyz, direction.xyz, max_depth, max_dist, dist, incidence, vid, material, code, iterations);
+
+            if (!hit) {
+                dist = -1;
+            }
+        }
+
+        const vec3 NORMALS[3] = {
+            vec3(1,0,0),
+            vec3(0,1,0),
+            vec3(0,0,1)
+        };
+
+        imageStore(pos_buf, idx, vec4(origin.xyz + dist * direction.xyz, 1));
+        imageStore(nrm_buf, idx, vec4(NORMALS[incidence] *  sign(-direction.xyz), 1));
+        imageStore(dst_buf, idx, vec4(dist));
+        imageStore(mat_buf, idx, uvec4(material));
+        imageStore(itr_buf, idx, uvec4(iterations));
+    }
+}

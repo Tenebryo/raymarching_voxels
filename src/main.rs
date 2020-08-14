@@ -11,6 +11,7 @@ mod vox;
 mod brdf;
 mod pipelines;
 mod descriptor_sets;
+mod command_buffer;
 
 use timing::Timing;
 use gbuffer::GBuffer;
@@ -410,7 +411,6 @@ fn main() {
     let mut render_new_frame = true;
     let mut render_single_frame = false;
     let mut last_mouse_pos = (0.0, 0.0);
-    let mut mouse_hide = false;
 
     let mut input = WinitInputHelper::new();
 
