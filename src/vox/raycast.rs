@@ -1,6 +1,6 @@
 // this file is a roughly 1-to-1 translation of the GPU shader for use on the CPU
 
-use crate::vox::VChildDescriptor;
+use super::*;
 
 use cgmath::prelude::*;
 use cgmath::Vector2;
@@ -11,6 +11,12 @@ type Vec3 = Vector3<f32>;
 
 type UVec2 = Vector2<u32>;
 type UVec3 = Vector3<u32>;
+
+impl VoxelChunk {
+    pub fn raycast(&self, o : Vec3, d : Vec3, max_depth : u32, max_dist : f32) -> raycast::Raycast {
+        raycast::voxel_march(&self.voxels, &self.lod_materials, o, d, max_depth, max_dist)
+    }
+}
 
 
 const AXIS_X_MASK : u32 = 1;
